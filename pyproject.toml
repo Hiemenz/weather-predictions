@@ -1,0 +1,31 @@
+[project]
+name = "weather-predictions"
+version = "0.1.0"
+description = "NOAA/NWS-based weather data collection, training, and precipitation forecasting"
+authors = [
+    {name = "hiemenz",email = "kevinhiemenz1@gmail.com"}
+]
+readme = "README.md"
+requires-python = "^3.11"
+dependencies = [
+    "requests (>=2.34.2,<3.0.0)",
+    "pandas (>=3.0.3,<4.0.0)",
+    "scikit-learn (>=1.9.0,<2.0.0)",
+    "joblib (>=1.5.3,<2.0.0)",
+    "typer (>=0.26.8,<0.27.0)",
+    "python-dateutil (>=2.9.0.post0,<3.0.0)"
+]
+
+
+[project.scripts]
+weather = "weather_predictions.cli:app"
+
+[tool.poetry]
+packages = [{include = "weather_predictions", from = "src"}]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^9.1.1"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
