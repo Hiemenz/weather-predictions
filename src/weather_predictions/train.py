@@ -1,28 +1,24 @@
-"""Train a next-day rain/no-rain classifier from accumulated observations.
+"""Train next-1/2/3-day rain and temperature models from accumulated daily history.
 
-Uses a time-ordered split (not random) so evaluation reflects genuine
-forecasting skill rather than leaking future days into training.
+Trains one rain classifier and two temperature regressors (max, min) per
+forecast horizon, all sharing the same feature set. Uses a time-ordered
+split (not random) per horizon so evaluation reflects genuine forecasting
+skill rather than leaking future days into training.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import joblib
-import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score, roc_auc_score
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.metrics import accuracy_score, mean_absolute_error, roc_auc_score
 
-from weather_predictions.config import MIN_TRAINING_DAYS, MODEL_PATH, MODELS_DIR
-from weather_predictions.features import (
-    FEATURE_COLUMNS,
-    build_daily_features,
-    build_training_frame,
-    raw_to_frame,
-)
-from weather_predictions.storage import fetch_all_observations
+from weather_predictions.config import FORECAST_HORIZONS, MIN_TRAINING_DAYS, MODEL_PATH, MODELS_DIR
+from weather_predictions.features import FEATURE_COLUMNS, build_daily_features, build_training_frame
+from weather_predictions.storage import fetch_all_daily
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -33,91 +29,120 @@ class NotEnoughDataError(RuntimeError):
 
 
 @dataclass
+class HorizonResult:
+    horizon_days: int
+    n_train: int
+    n_test: int
+    rain_accuracy: float
+    rain_baseline_accuracy: float
+    rain_roc_auc: float | None
+    temp_max_mae: float
+    temp_max_baseline_mae: float
+    temp_min_mae: float
+    temp_min_baseline_mae: float
+
+
+@dataclass
 class TrainResult:
     trained_at: str
     n_days: int
-    n_train: int
-    n_test: int
-    accuracy: float | None
-    precision: float | None
-    recall: float | None
-    roc_auc: float | None
-    baseline_accuracy: float | None
-    feature_columns: list[str]
+    horizons: list[HorizonResult]
 
 
-def _evaluate(y_true, y_pred, y_proba) -> dict:
-    if len(set(y_true)) < 2:
-        # Can't compute most metrics meaningfully with only one class present.
-        return {
-            "accuracy": float(accuracy_score(y_true, y_pred)),
-            "precision": None,
-            "recall": None,
-            "roc_auc": None,
-        }
-    return {
-        "accuracy": float(accuracy_score(y_true, y_pred)),
-        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
-        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
-        "roc_auc": float(roc_auc_score(y_true, y_proba)),
-    }
-
-
-def train(min_training_days: int = MIN_TRAINING_DAYS) -> TrainResult:
-    raw_records = fetch_all_observations()
-    raw_df = raw_to_frame(raw_records)
-    daily = build_daily_features(raw_df)
-
-    if len(daily) < min_training_days:
-        raise NotEnoughDataError(
-            f"Only {len(daily)} day(s) of aggregated history; need at least "
-            f"{min_training_days}. Keep the fetch job running and try again later."
-        )
-
-    X, y = build_training_frame(daily)
+def _train_one_horizon(daily, horizon: int, min_training_days: int) -> tuple[dict, HorizonResult]:
+    X, y_rain, y_tmax, y_tmin = build_training_frame(daily, horizon)
     if len(X) < min_training_days:
         raise NotEnoughDataError(
-            f"Only {len(X)} labeled day(s) after dropping incomplete rows; need at least "
-            f"{min_training_days}. Keep the fetch job running and try again later."
+            f"Only {len(X)} labeled day(s) available for the {horizon}-day horizon; need at "
+            f"least {min_training_days}. Keep collecting data and try again later."
         )
 
-    # Time-based split: last 20% (min 1, at least a couple days if possible) held out.
     n_test = max(1, int(len(X) * 0.2))
     n_train = len(X) - n_test
     X_train, X_test = X.iloc[:n_train], X.iloc[n_train:]
-    y_train, y_test = y.iloc[:n_train], y.iloc[n_train:]
 
-    model = RandomForestClassifier(
-        n_estimators=200,
-        max_depth=6,
-        min_samples_leaf=2,
-        random_state=42,
-        class_weight="balanced",
+    rain_clf = RandomForestClassifier(
+        n_estimators=200, max_depth=6, min_samples_leaf=2, random_state=42, class_weight="balanced"
     )
-    model.fit(X_train, y_train)
+    rain_clf.fit(X_train, y_rain.iloc[:n_train])
+    rain_pred = rain_clf.predict(X_test)
+    rain_true = y_rain.iloc[n_train:]
+    rain_accuracy = float(accuracy_score(rain_true, rain_pred))
+    rain_baseline_accuracy = float(accuracy_score(rain_true, X_test["rain"]))
+    rain_roc_auc = None
+    if len(set(rain_true)) > 1:
+        rain_proba = rain_clf.predict_proba(X_test)[:, 1]
+        rain_roc_auc = float(roc_auc_score(rain_true, rain_proba))
 
-    y_pred = model.predict(X_test)
-    y_proba = model.predict_proba(X_test)[:, 1]
-    metrics = _evaluate(y_test, y_pred, y_proba)
+    tmax_reg = RandomForestRegressor(n_estimators=200, max_depth=8, min_samples_leaf=2, random_state=42)
+    tmax_reg.fit(X_train, y_tmax.iloc[:n_train])
+    tmax_true = y_tmax.iloc[n_train:]
+    temp_max_mae = float(mean_absolute_error(tmax_true, tmax_reg.predict(X_test)))
+    temp_max_baseline_mae = float(mean_absolute_error(tmax_true, X_test["temp_max_c"]))
 
-    # Persistence baseline: "tomorrow will look like today".
-    baseline_pred = X_test["rain_today"]
-    baseline_accuracy = float(accuracy_score(y_test, baseline_pred))
+    tmin_reg = RandomForestRegressor(n_estimators=200, max_depth=8, min_samples_leaf=2, random_state=42)
+    tmin_reg.fit(X_train, y_tmin.iloc[:n_train])
+    tmin_true = y_tmin.iloc[n_train:]
+    temp_min_mae = float(mean_absolute_error(tmin_true, tmin_reg.predict(X_test)))
+    temp_min_baseline_mae = float(mean_absolute_error(tmin_true, X_test["temp_min_c"]))
 
-    MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    joblib.dump({"model": model, "feature_columns": FEATURE_COLUMNS}, MODEL_PATH)
-
-    result = TrainResult(
-        trained_at=datetime.now(timezone.utc).isoformat(),
-        n_days=len(daily),
+    models = {"rain_clf": rain_clf, "tmax_reg": tmax_reg, "tmin_reg": tmin_reg}
+    result = HorizonResult(
+        horizon_days=horizon,
         n_train=n_train,
         n_test=n_test,
-        baseline_accuracy=baseline_accuracy,
-        feature_columns=FEATURE_COLUMNS,
-        **metrics,
+        rain_accuracy=rain_accuracy,
+        rain_baseline_accuracy=rain_baseline_accuracy,
+        rain_roc_auc=rain_roc_auc,
+        temp_max_mae=temp_max_mae,
+        temp_max_baseline_mae=temp_max_baseline_mae,
+        temp_min_mae=temp_min_mae,
+        temp_min_baseline_mae=temp_min_baseline_mae,
     )
-    log.info("trained model on %d days -> %s", len(daily), MODEL_PATH)
-    log.info("metrics: %s", asdict(result))
+    return models, result
+
+
+def train(min_training_days: int = MIN_TRAINING_DAYS) -> TrainResult:
+    daily_records = fetch_all_daily()
+    daily = build_daily_features(daily_records)
+
+    if len(daily) < min_training_days:
+        raise NotEnoughDataError(
+            f"Only {len(daily)} day(s) of history; need at least {min_training_days}. "
+            "Keep collecting data and try again later."
+        )
+
+    trained_at = datetime.now(timezone.utc).isoformat()
+    horizon_models: dict[int, dict] = {}
+    horizon_results: list[HorizonResult] = []
+    for horizon in FORECAST_HORIZONS:
+        models, result = _train_one_horizon(daily, horizon, min_training_days)
+        horizon_models[horizon] = models
+        horizon_results.append(result)
+
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    joblib.dump(
+        {
+            "trained_at": trained_at,
+            "feature_columns": FEATURE_COLUMNS,
+            "horizons": horizon_models,
+        },
+        MODEL_PATH,
+    )
+
+    result = TrainResult(trained_at=trained_at, n_days=len(daily), horizons=horizon_results)
+    log.info("trained model bundle on %d days -> %s", len(daily), MODEL_PATH)
+    for hr in horizon_results:
+        log.info(
+            "h=%dd rain_acc=%.2f (baseline %.2f) tmax_mae=%.2f (baseline %.2f) tmin_mae=%.2f (baseline %.2f)",
+            hr.horizon_days,
+            hr.rain_accuracy,
+            hr.rain_baseline_accuracy,
+            hr.temp_max_mae,
+            hr.temp_max_baseline_mae,
+            hr.temp_min_mae,
+            hr.temp_min_baseline_mae,
+        )
     return result
 
 

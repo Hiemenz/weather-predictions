@@ -6,3 +6,5 @@ data/*.sqlite-journal
 data/*.log
 models/*.joblib
 .DS_Store
+.env
+.claude/

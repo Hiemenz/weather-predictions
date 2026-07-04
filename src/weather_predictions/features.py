@@ -1,14 +1,10 @@
-"""Turn raw hourly-ish observations into a daily feature table for modeling.
+"""Feature engineering for multi-day-ahead rain and temperature forecasting.
 
-Design notes:
-- Days are bucketed in local time (America/Chicago) so "today"/"tomorrow"
-  line up with how a person would read a forecast.
-- Daily precipitation is approximated by summing `precip_last_hour_mm`
-  across the day, treating missing readings as 0. METAR stations don't
-  always populate that field on every report, so this is a lower bound,
-  not a perfectly calibrated total.
-- The label is whether *tomorrow* sees measurable rain, so every row's
-  target comes from the following day's aggregate (see `add_target`).
+Everything is built from `daily_observations` — one row per calendar date
+with temp_max_c, temp_min_c, precip_mm, and a derived `rain` flag. That table
+is populated from two sources (see storage.py): CDO/GHCND for historical
+bulk, and a live METAR-derived aggregate (see `compute_live_daily_aggregate`)
+for the last day or two before CDO catches up.
 """
 
 from __future__ import annotations
@@ -18,33 +14,30 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
-from weather_predictions.config import RAIN_THRESHOLD_MM
+from weather_predictions.config import FORECAST_HORIZONS, RAIN_THRESHOLD_MM
 
 LOCAL_TZ = ZoneInfo("America/Chicago")
 
 FEATURE_COLUMNS = [
     "temp_max_c",
     "temp_min_c",
-    "temp_mean_c",
-    "dewpoint_mean_c",
-    "humidity_mean_pct",
-    "pressure_mean_pa",
-    "pressure_delta_pa",
-    "wind_speed_mean_kmh",
-    "wind_gust_max_kmh",
-    "precip_total_mm",
-    "rain_today",
+    "precip_mm",
+    "rain",
+    "rain_yesterday",
+    "temp_max_trend_c",
+    "temp_max_3d_mean_c",
+    "temp_min_3d_mean_c",
+    "precip_3d_mean_mm",
+    "precip_7d_mean_mm",
     "month_sin",
     "month_cos",
     "doy_sin",
     "doy_cos",
-    "precip_3d_mean_mm",
-    "pressure_3d_delta_pa",
-    "rain_yesterday",
 ]
 
 
 def raw_to_frame(records: list[dict]) -> pd.DataFrame:
+    """Flatten raw METAR observation rows and attach a local calendar date."""
     df = pd.DataFrame.from_records(records)
     if df.empty:
         return df
@@ -53,67 +46,80 @@ def raw_to_frame(records: list[dict]) -> pd.DataFrame:
     return df
 
 
-def build_daily_features(raw_df: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate raw observations (one row per report) into one row per day."""
+def compute_live_daily_aggregate(raw_df: pd.DataFrame) -> list[dict]:
+    """Aggregate raw METAR reports into daily_observations-shaped rows.
+
+    Precipitation is approximated by summing `precip_last_hour_mm` across the
+    day (missing readings treated as 0) — METAR stations don't populate that
+    field on every report, so this is a lower bound, not an exact total.
+    """
     if raw_df.empty:
-        return pd.DataFrame(columns=["local_date", *FEATURE_COLUMNS])
+        return []
 
     grouped = raw_df.groupby("local_date")
-    daily = grouped.agg(
+    agg = grouped.agg(
         temp_max_c=("temperature_c", "max"),
         temp_min_c=("temperature_c", "min"),
-        temp_mean_c=("temperature_c", "mean"),
-        dewpoint_mean_c=("dewpoint_c", "mean"),
-        humidity_mean_pct=("relative_humidity_pct", "mean"),
-        pressure_mean_pa=("barometric_pressure_pa", "mean"),
-        wind_speed_mean_kmh=("wind_speed_kmh", "mean"),
-        wind_gust_max_kmh=("wind_gust_kmh", "max"),
-        precip_total_mm=("precip_last_hour_mm", lambda s: s.fillna(0).sum()),
-        n_observations=("timestamp", "count"),
+        precip_mm=("precip_last_hour_mm", lambda s: s.fillna(0).sum()),
     ).reset_index()
 
-    # Same-day pressure trend: last reading minus first reading.
-    pressure_delta = grouped["barometric_pressure_pa"].agg(
-        lambda s: s.dropna().iloc[-1] - s.dropna().iloc[0] if s.dropna().size >= 2 else np.nan
-    )
-    daily["pressure_delta_pa"] = pressure_delta.to_numpy()
-
-    daily["rain_today"] = (daily["precip_total_mm"] >= RAIN_THRESHOLD_MM).astype(int)
-    daily["local_date"] = pd.to_datetime(daily["local_date"])
-    daily = daily.sort_values("local_date").reset_index(drop=True)
-
-    month = daily["local_date"].dt.month
-    doy = daily["local_date"].dt.dayofyear
-    daily["month_sin"] = np.sin(2 * np.pi * month / 12)
-    daily["month_cos"] = np.cos(2 * np.pi * month / 12)
-    daily["doy_sin"] = np.sin(2 * np.pi * doy / 365.25)
-    daily["doy_cos"] = np.cos(2 * np.pi * doy / 365.25)
-
-    daily["precip_3d_mean_mm"] = daily["precip_total_mm"].rolling(3, min_periods=1).mean()
-    daily["pressure_3d_delta_pa"] = daily["pressure_delta_pa"].rolling(3, min_periods=1).mean()
-    daily["rain_yesterday"] = daily["rain_today"].shift(1)
-
-    return daily
+    agg["rain"] = (agg["precip_mm"] >= RAIN_THRESHOLD_MM).astype(int)
+    agg["source"] = "metar_live"
+    agg["date"] = agg["local_date"].astype(str)
+    return agg[["date", "source", "temp_max_c", "temp_min_c", "precip_mm", "rain"]].to_dict("records")
 
 
-def add_target(daily: pd.DataFrame) -> pd.DataFrame:
-    """Attach `rain_tomorrow`, the label for next-day precipitation."""
+def build_daily_features(daily_records: list[dict]) -> pd.DataFrame:
+    """Turn stored daily_observations rows into a feature-engineered frame."""
+    if not daily_records:
+        return pd.DataFrame(columns=["date", *FEATURE_COLUMNS])
+
+    df = pd.DataFrame.from_records(daily_records)
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date").drop_duplicates(subset="date", keep="last").reset_index(drop=True)
+
+    month = df["date"].dt.month
+    doy = df["date"].dt.dayofyear
+    df["month_sin"] = np.sin(2 * np.pi * month / 12)
+    df["month_cos"] = np.cos(2 * np.pi * month / 12)
+    df["doy_sin"] = np.sin(2 * np.pi * doy / 365.25)
+    df["doy_cos"] = np.cos(2 * np.pi * doy / 365.25)
+
+    df["rain_yesterday"] = df["rain"].shift(1)
+    df["temp_max_trend_c"] = df["temp_max_c"] - df["temp_max_c"].shift(1)
+    df["temp_max_3d_mean_c"] = df["temp_max_c"].rolling(3, min_periods=1).mean()
+    df["temp_min_3d_mean_c"] = df["temp_min_c"].rolling(3, min_periods=1).mean()
+    df["precip_3d_mean_mm"] = df["precip_mm"].rolling(3, min_periods=1).mean()
+    df["precip_7d_mean_mm"] = df["precip_mm"].rolling(7, min_periods=1).mean()
+
+    return df
+
+
+def add_targets(daily: pd.DataFrame, horizons: tuple[int, ...] = FORECAST_HORIZONS) -> pd.DataFrame:
+    """Attach rain/temp_max/temp_min targets for each forecast horizon."""
     out = daily.copy()
-    out["rain_tomorrow"] = out["rain_today"].shift(-1)
+    for h in horizons:
+        out[f"rain_h{h}"] = out["rain"].shift(-h)
+        out[f"temp_max_h{h}"] = out["temp_max_c"].shift(-h)
+        out[f"temp_min_h{h}"] = out["temp_min_c"].shift(-h)
     return out
 
 
-def build_training_frame(daily: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
-    """Return (X, y) ready for sklearn, dropping rows with no label or missing features."""
-    labeled = add_target(daily).dropna(subset=["rain_tomorrow", *FEATURE_COLUMNS])
+def build_training_frame(daily: pd.DataFrame, horizon: int) -> tuple[pd.DataFrame, pd.Series, pd.Series, pd.Series]:
+    """Return (X, y_rain, y_temp_max, y_temp_min) for one horizon, dropping incomplete rows."""
+    labeled = add_targets(daily, (horizon,))
+    target_cols = [f"rain_h{horizon}", f"temp_max_h{horizon}", f"temp_min_h{horizon}"]
+    labeled = labeled.dropna(subset=[*FEATURE_COLUMNS, *target_cols])
     X = labeled[FEATURE_COLUMNS]
-    y = labeled["rain_tomorrow"].astype(int)
-    return X, y
+    y_rain = labeled[f"rain_h{horizon}"].astype(int)
+    y_tmax = labeled[f"temp_max_h{horizon}"]
+    y_tmin = labeled[f"temp_min_h{horizon}"]
+    return X, y_rain, y_tmax, y_tmin
 
 
 def latest_feature_row(daily: pd.DataFrame) -> pd.DataFrame | None:
-    """The most recent fully-formed day's features, used to predict tomorrow."""
+    """The most recent fully-formed day's features, used as the basis for predictions."""
     usable = daily.dropna(subset=FEATURE_COLUMNS)
     if usable.empty:
         return None
-    return usable.iloc[[-1]][FEATURE_COLUMNS]
+    return usable.iloc[[-1]]
