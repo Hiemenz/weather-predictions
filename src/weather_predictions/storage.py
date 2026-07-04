@@ -1,12 +1,15 @@
 """SQLite storage.
 
-Three tables:
+Four tables:
 - `observations` — raw NWS/METAR reports, deduplicated on (station_id, timestamp).
-  Used to derive a live aggregate for "today" before CDO's data catches up.
-- `daily_observations` — one row per calendar date (temp max/min, precip),
-  the primary table features/training/prediction are built from. Populated
-  by CDO backfill (authoritative, wins ties) and by a live METAR-derived
-  aggregate for very recent days CDO hasn't published yet (fills gaps only).
+  Used to derive a live aggregate for "today" before CDO/LCD data catches up.
+- `daily_observations` — one row per calendar date, the primary table
+  features/training/prediction are built from. temp_max_c/temp_min_c/
+  precip_mm/rain/source are owned by CDO/GHCND backfill (authoritative) or
+  the live METAR-derived aggregate (fills gaps only, never overwrites
+  GHCND). humidity_pct/pressure_hpa/wind_speed_kmh are filled in separately
+  by LCD enrichment (or the live aggregate), and are never clobbered by a
+  GHCND re-run since GHCND doesn't carry those fields at all.
 - `predictions` / `model_performance` — forecasts made by the model and their
   scored accuracy once the real outcome is known, so skill can be tracked
   over time.
@@ -51,7 +54,10 @@ CREATE TABLE IF NOT EXISTS daily_observations (
     temp_max_c REAL,
     temp_min_c REAL,
     precip_mm REAL,
-    rain INTEGER
+    rain INTEGER,
+    humidity_pct REAL,
+    pressure_hpa REAL,
+    wind_speed_kmh REAL
 );
 
 CREATE TABLE IF NOT EXISTS predictions (
@@ -101,7 +107,7 @@ _OBS_COLUMNS = [
     "heat_index_c",
 ]
 
-_DAILY_COLUMNS = ["date", "source", "temp_max_c", "temp_min_c", "precip_mm", "rain"]
+_ENRICHMENT_COLUMNS = ["humidity_pct", "pressure_hpa", "wind_speed_kmh"]
 
 _PREDICTION_COLUMNS = [
     "predicted_date",
@@ -126,12 +132,21 @@ _PERFORMANCE_COLUMNS = [
 ]
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after a database's initial creation."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(daily_observations)")}
+    for column in _ENRICHMENT_COLUMNS:
+        if column not in existing:
+            conn.execute(f"ALTER TABLE daily_observations ADD COLUMN {column} REAL")
+
+
 @contextmanager
 def connect(db_path: Path = DB_PATH) -> Iterator[sqlite3.Connection]:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     try:
         conn.executescript(_SCHEMA)
+        _migrate(conn)
         yield conn
         conn.commit()
     finally:
@@ -168,15 +183,77 @@ def count_observations(db_path: Path = DB_PATH) -> int:
 
 
 def upsert_daily_from_cdo(records: list[dict[str, Any]], db_path: Path = DB_PATH) -> int:
-    """CDO/GHCND data is authoritative — always overwrites existing rows for that date."""
+    """CDO/GHCND owns temp/precip/rain/source and always overwrites them for that date.
+
+    Never touches humidity_pct/pressure_hpa/wind_speed_kmh, so re-running a
+    GHCND backfill can't wipe out LCD enrichment for the same dates.
+    """
+    if not records:
+        return 0
+    sql = """
+    INSERT INTO daily_observations (date, source, temp_max_c, temp_min_c, precip_mm, rain)
+    VALUES (:date, :source, :temp_max_c, :temp_min_c, :precip_mm, :rain)
+    ON CONFLICT(date) DO UPDATE SET
+        source = excluded.source,
+        temp_max_c = excluded.temp_max_c,
+        temp_min_c = excluded.temp_min_c,
+        precip_mm = excluded.precip_mm,
+        rain = excluded.rain
+    """
     with connect(db_path) as conn:
-        return _upsert(conn, "daily_observations", _DAILY_COLUMNS, records, replace=True)
+        before = conn.total_changes
+        conn.executemany(sql, records)
+        return conn.total_changes - before
 
 
 def upsert_daily_from_metar(records: list[dict[str, Any]], db_path: Path = DB_PATH) -> int:
-    """Live METAR-derived aggregate — only fills gaps for dates CDO hasn't published yet."""
+    """Live METAR-derived temp/precip/rain for "today"/"yesterday" before GHCND catches up.
+
+    Refines its own row as more observations come in through the day, but
+    never overwrites a date GHCND has already made authoritative. Pressure/
+    humidity/wind are handled separately by `upsert_daily_enrichment`, since
+    GHCND never owns those fields — a date can be GHCND-authoritative for
+    temp/precip while still needing its pressure/humidity filled in live.
+    """
+    if not records:
+        return 0
+    sql = """
+    INSERT INTO daily_observations (date, source, temp_max_c, temp_min_c, precip_mm, rain)
+    VALUES (:date, :source, :temp_max_c, :temp_min_c, :precip_mm, :rain)
+    ON CONFLICT(date) DO UPDATE SET
+        temp_max_c = excluded.temp_max_c,
+        temp_min_c = excluded.temp_min_c,
+        precip_mm = excluded.precip_mm,
+        rain = excluded.rain
+    WHERE daily_observations.source != 'ghcnd'
+    """
     with connect(db_path) as conn:
-        return _upsert(conn, "daily_observations", _DAILY_COLUMNS, records, replace=False)
+        before = conn.total_changes
+        conn.executemany(sql, records)
+        return conn.total_changes - before
+
+
+def upsert_daily_enrichment(records: list[dict[str, Any]], db_path: Path = DB_PATH) -> int:
+    """Fill in humidity/pressure/wind for existing dates without touching other columns.
+
+    Used by LCD enrichment, which supplies fields GHCND's daily summaries and
+    the METAR-derived aggregate keep separately. If no row exists yet for a
+    date, inserts a bare one tagged source='lcd'.
+    """
+    if not records:
+        return 0
+    sql = """
+    INSERT INTO daily_observations (date, source, humidity_pct, pressure_hpa, wind_speed_kmh)
+    VALUES (:date, 'lcd', :humidity_pct, :pressure_hpa, :wind_speed_kmh)
+    ON CONFLICT(date) DO UPDATE SET
+        humidity_pct = excluded.humidity_pct,
+        pressure_hpa = excluded.pressure_hpa,
+        wind_speed_kmh = excluded.wind_speed_kmh
+    """
+    with connect(db_path) as conn:
+        before = conn.total_changes
+        conn.executemany(sql, records)
+        return conn.total_changes - before
 
 
 def fetch_all_daily(db_path: Path = DB_PATH) -> list[dict[str, Any]]:

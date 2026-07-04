@@ -41,7 +41,13 @@ scp pi@<pi-host>:/path/to/weather_predicitons/data/observations.sqlite ./data/
 
 ```bash
 poetry install
-poetry run weather status    # confirm the synced data shows up
-poetry run weather train     # once enough history has accumulated
+poetry run weather status              # confirm the synced data shows up
+poetry run weather backfill --start 2000-01-01   # one-time bulk temp/precip (needs NOAA_CDO_TOKEN in .env)
+poetry run weather enrich --start 2000-01-01     # one-time bulk pressure/humidity/wind (no token needed)
+poetry run weather train               # once enough history has accumulated
 poetry run weather predict
 ```
+
+`backfill`/`enrich` only need to be run once (plus occasionally again to
+pick up newly-published years) — they're not part of the Pi's recurring
+cron job, since they cover history, not the live gap.

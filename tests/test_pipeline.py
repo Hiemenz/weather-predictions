@@ -20,6 +20,7 @@ from weather_predictions.features import (
     compute_live_daily_aggregate,
     raw_to_frame,
 )
+from weather_predictions.lcd_client import parse_daily_rows
 
 
 def _synthetic_daily_records(n_days: int = 40, start: date = date(2026, 1, 1)) -> list[dict]:
@@ -36,6 +37,9 @@ def _synthetic_daily_records(n_days: int = 40, start: date = date(2026, 1, 1)) -
                 "temp_min_c": tmax - random.uniform(3, 10),
                 "precip_mm": random.uniform(1, 10) if raining else 0.0,
                 "rain": int(raining),
+                "humidity_pct": random.uniform(30, 90),
+                "pressure_hpa": 1013 + random.uniform(-10, 10),
+                "wind_speed_kmh": random.uniform(0, 20),
             }
         )
     return records
@@ -54,6 +58,9 @@ def _synthetic_raw_observations(n_days: int = 2) -> list[dict]:
                     "timestamp": ts.isoformat(),
                     "temperature_c": 10 + random.uniform(-5, 5),
                     "precip_last_hour_mm": random.choice([0.0, 0.0, 0.0, 2.0]),
+                    "relative_humidity_pct": random.uniform(30, 90),
+                    "barometric_pressure_pa": 101300 + random.uniform(-1000, 1000),
+                    "wind_speed_kmh": random.uniform(0, 20),
                 }
             )
     return records
@@ -63,8 +70,39 @@ def test_compute_live_daily_aggregate():
     raw_df = raw_to_frame(_synthetic_raw_observations(2))
     rows = compute_live_daily_aggregate(raw_df)
     assert len(rows) >= 2
-    assert {"date", "source", "temp_max_c", "temp_min_c", "precip_mm", "rain"} <= rows[0].keys()
+    expected_keys = {
+        "date",
+        "source",
+        "temp_max_c",
+        "temp_min_c",
+        "precip_mm",
+        "rain",
+        "humidity_pct",
+        "pressure_hpa",
+        "wind_speed_kmh",
+    }
+    assert expected_keys <= rows[0].keys()
     assert all(r["source"] == "metar_live" for r in rows)
+    # barometric_pressure_pa ~101300 Pa should convert to ~1013 hPa.
+    assert 900 < rows[0]["pressure_hpa"] < 1100
+
+
+def test_parse_lcd_daily_rows():
+    header = (
+        "STATION,DATE,REPORT_TYPE,DailyAverageRelativeHumidity,"
+        "DailyAverageSeaLevelPressure,DailyAverageStationPressure,DailyAverageWindSpeed\n"
+    )
+    rows = (
+        "72327013897,2020-01-01T23:59:00,FM-15,50,30.00,29.50,5.0\n"
+        "72327013897,2020-01-01T23:59:00,SOD  ,47,30.00,29.35,6.0\n"
+        "72327013897,2020-01-02T23:59:00,SOD  ,77,29.83,29.16,9.6\n"
+    )
+    parsed = parse_daily_rows(header + rows)
+    assert len(parsed) == 2  # only SOD rows
+    assert parsed[0]["date"] == "2020-01-01"
+    assert parsed[0]["humidity_pct"] == 47
+    assert abs(parsed[0]["pressure_hpa"] - 30.00 * 33.8639) < 0.01
+    assert abs(parsed[0]["wind_speed_kmh"] - 6.0 * 1.60934) < 0.01
 
 
 def test_build_daily_features_shapes():
