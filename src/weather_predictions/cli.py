@@ -1,16 +1,18 @@
-"""Command-line entrypoint: `weather fetch|train|predict|status`."""
+"""Command-line entrypoint: `weather fetch|backfill|train|predict|evaluate|status`."""
 
 from __future__ import annotations
+
+from datetime import date, datetime
 
 import typer
 
 from weather_predictions.config import MIN_TRAINING_DAYS, MODEL_PATH
-from weather_predictions.features import build_daily_features, raw_to_frame
+from weather_predictions.features import build_daily_features
 from weather_predictions.predict import ModelNotTrainedError, NoUsableDataError, predict as run_predict
-from weather_predictions.storage import count_observations, fetch_all_observations
+from weather_predictions.storage import fetch_all_daily
 from weather_predictions.train import NotEnoughDataError, train as run_train
 
-app = typer.Typer(help="Fetch NOAA/NWS weather data, train, and predict next-day rain.")
+app = typer.Typer(help="Fetch NOAA weather data, train, and predict rain/temperature 1-3 days out.")
 
 
 @app.command()
@@ -23,49 +25,92 @@ def fetch() -> None:
 
 
 @app.command()
+def backfill(
+    start: str = typer.Option("2000-01-01", help="Start date, YYYY-MM-DD."),
+    end: str = typer.Option(None, help="End date, YYYY-MM-DD (defaults to today)."),
+) -> None:
+    """Bulk-load historical daily data from NOAA CDO/GHCND."""
+    from weather_predictions.backfill import run as run_backfill
+    from weather_predictions.cdo_client import CDOTokenMissingError
+
+    start_date = date.fromisoformat(start)
+    end_date = date.fromisoformat(end) if end else None
+    try:
+        inserted = run_backfill(start_date, end_date)
+    except CDOTokenMissingError as e:
+        typer.echo(str(e))
+        raise typer.Exit(code=1)
+    typer.echo(f"Upserted {inserted} day(s) of historical data.")
+
+
+@app.command()
 def status() -> None:
     """Show how much history has been collected and whether training is possible yet."""
-    n_raw = count_observations()
-    daily = build_daily_features(raw_to_frame(fetch_all_observations()))
+    daily = build_daily_features(fetch_all_daily())
     n_days = len(daily)
-    typer.echo(f"Raw observations stored: {n_raw}")
-    typer.echo(f"Aggregated days: {n_days} (need {MIN_TRAINING_DAYS} to train)")
+    typer.echo(f"Days of daily history: {n_days} (need {MIN_TRAINING_DAYS} to train)")
+    if not daily.empty:
+        typer.echo(f"Date range: {daily['date'].min().date()} to {daily['date'].max().date()}")
+        typer.echo(daily["source"].value_counts().to_string())
     typer.echo(f"Model trained: {'yes' if MODEL_PATH.exists() else 'no'} ({MODEL_PATH})")
     if n_days < MIN_TRAINING_DAYS:
-        remaining = MIN_TRAINING_DAYS - n_days
-        typer.echo(f"Keep the fetch job running — roughly {remaining} more day(s) needed.")
+        typer.echo(f"Need {MIN_TRAINING_DAYS - n_days} more day(s) — run `weather backfill` for bulk history.")
 
 
 @app.command()
 def train() -> None:
-    """Train (or retrain) the rain/no-rain model on all accumulated history."""
+    """Train (or retrain) the 1/2/3-day rain + temperature models on all accumulated history."""
     try:
         result = run_train()
     except NotEnoughDataError as e:
         typer.echo(str(e))
         raise typer.Exit(code=1)
-    typer.echo(f"Trained on {result.n_days} days ({result.n_train} train / {result.n_test} test).")
-    typer.echo(f"Test accuracy: {result.accuracy:.2f} (persistence baseline: {result.baseline_accuracy:.2f})")
-    if result.roc_auc is not None:
-        typer.echo(f"ROC-AUC: {result.roc_auc:.2f}  Precision: {result.precision:.2f}  Recall: {result.recall:.2f}")
+
+    typer.echo(f"Trained on {result.n_days} days of history.")
+    for hr in result.horizons:
+        typer.echo(
+            f"  t+{hr.horizon_days}d: rain_acc={hr.rain_accuracy:.2f} (baseline {hr.rain_baseline_accuracy:.2f})"
+            f"  tmax_mae={hr.temp_max_mae:.1f}C (baseline {hr.temp_max_baseline_mae:.1f}C)"
+            f"  tmin_mae={hr.temp_min_mae:.1f}C (baseline {hr.temp_min_baseline_mae:.1f}C)"
+        )
 
 
 @app.command()
 def predict() -> None:
-    """Predict tomorrow's rain probability and show the official NWS forecast alongside it."""
+    """Predict rain probability + high/low temp for the next 1-3 days; stores predictions for later scoring."""
     try:
         result = run_predict()
     except (ModelNotTrainedError, NoUsableDataError) as e:
         typer.echo(str(e))
         raise typer.Exit(code=1)
 
-    typer.echo(f"As of {result.as_of_local_date}:")
-    typer.echo(f"  Model:  {result.rain_probability:.0%} chance of rain tomorrow "
-               f"({'RAIN' if result.rain_predicted else 'NO RAIN'})")
-    if result.nws_forecast_pop_pct is not None:
-        typer.echo(f"  NWS:    {result.nws_forecast_pop_pct}% chance of precipitation")
-    if result.nws_forecast_summary:
-        typer.echo(f"  NWS says: {result.nws_forecast_summary}")
+    typer.echo(f"As of {result.as_of_date} (model trained {result.model_trained_at}):")
+    for hp in result.horizons:
+        typer.echo(
+            f"  {hp.target_date} (t+{hp.horizon_days}d): {hp.rain_probability:.0%} rain, "
+            f"high {hp.temp_max_pred_c:.0f}C / low {hp.temp_min_pred_c:.0f}C"
+        )
+    if result.nws_daytime_forecasts:
+        typer.echo("NWS forecast for comparison:")
+        for line in result.nws_daytime_forecasts:
+            typer.echo(f"  {line}")
+
+
+@app.command()
+def evaluate() -> None:
+    """Compare past predictions against what actually happened, and log accuracy over time."""
+    from weather_predictions.evaluate import evaluate as run_evaluate
+
+    scored, pending = run_evaluate()
+    if not scored:
+        typer.echo("No predictions old enough to score yet.")
+    for r in scored:
+        typer.echo(
+            f"model {r.model_trained_at} | t+{r.horizon_days}d | n={r.n_samples} | "
+            f"rain_acc={r.rain_accuracy:.2f} rain_brier={r.rain_brier:.3f} "
+            f"tmax_mae={r.temp_max_mae:.1f}C tmin_mae={r.temp_min_mae:.1f}C"
+        )
+    typer.echo(f"Pending (no outcome yet): {pending}")
 
 
 if __name__ == "__main__":
