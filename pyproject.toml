@@ -14,8 +14,7 @@ dependencies = [
     "joblib (>=1.5.3,<2.0.0)",
     "typer (>=0.26.8,<0.27.0)",
     "python-dateutil (>=2.9.0.post0,<3.0.0)",
-    "python-dotenv (>=1.2.2,<2.0.0)",
-    "arm-pyart (>=2.2.4,<3.0.0)"
+    "python-dotenv (>=1.2.2,<2.0.0)"
 ]
 
 
@@ -27,6 +26,17 @@ packages = [{include = "weather_predictions", from = "src"}]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.1.1"
+
+# Radar decoding only — Py-ART pulls in Cartopy, which has no prebuilt ARM
+# wheels and is painful to compile on a Raspberry Pi. The Pi only ever
+# downloads raw scans (radar_client.py, stdlib + `aws` CLI, no Python
+# geospatial deps); decoding happens on whichever machine has this group
+# installed (`poetry install --with radar`).
+[tool.poetry.group.radar]
+optional = true
+
+[tool.poetry.group.radar.dependencies]
+arm-pyart = "^2.2.4"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

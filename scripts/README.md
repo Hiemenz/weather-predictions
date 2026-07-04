@@ -52,11 +52,32 @@ poetry run weather predict
 pick up newly-published years) — they're not part of the Pi's recurring
 cron job, since they cover history, not the live gap.
 
-## Radar (not yet part of the cron job)
+## Radar: Pi downloads raw, Mac decodes
 
-`weather radar-fetch`/`radar-backfill` are separate from the above — see
-the main README's "Radar" section. They pull much heavier dependencies
-(Py-ART, cartopy, matplotlib, dask) and need the `aws` CLI, and a scan
-arrives every ~5 minutes at ~12-15MB raw. Whether to run this on the Pi or
-the Mac is worth deciding deliberately (Pi storage/CPU vs. wanting
-continuous collection) before adding it to `install_cron.sh`.
+Radar decoding needs Py-ART, which pulls in Cartopy — Cartopy has no
+prebuilt ARM wheels, so it's a poor fit for the Pi. The split:
+
+- **Pi**: `poetry install` (default — the `radar` dependency group is
+  optional and skipped), then `weather radar-fetch-raw` on a schedule.
+  Needs only the `aws` CLI, no Python geospatial deps at all.
+- **Mac**: `poetry install --with radar` to get Py-ART, then sync the raw
+  files over (same idea as the sqlite sync above) and run
+  `weather radar-decode-pending` to turn them into stored grids.
+
+```bash
+# On the Pi
+scripts/install_cron.sh                 # add a radar-fetch-raw line, see below
+poetry run weather radar-fetch-raw       # or run manually / via its own cron entry
+
+# Sync raw scans to the Mac
+rsync -av pi@<pi-host>:/path/to/weather_predicitons/data/radar/raw/ ./data/radar/raw/
+
+# On the Mac
+poetry install --with radar
+poetry run weather radar-decode-pending  # decodes + deletes the synced raw files
+```
+
+`install_cron.sh` only wires up the tabular `weather fetch` job today —
+add a second crontab line for `radar-fetch-raw` at whatever cadence you
+want (scans arrive every ~5 minutes; every 5-10 minutes matches that,
+every hour is enough if you just want a lower-cost archive).

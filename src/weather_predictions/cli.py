@@ -1,4 +1,4 @@
-"""Command-line entrypoint: `weather fetch|backfill|enrich|radar-fetch|radar-backfill|train|predict|evaluate|status`."""
+"""Command-line entrypoint: `weather fetch|backfill|enrich|radar-fetch-raw|radar-backfill-raw|radar-decode-pending|radar-fetch|radar-backfill|train|predict|evaluate|status`."""
 
 from __future__ import annotations
 
@@ -58,8 +58,38 @@ def enrich(
 
 
 @app.command()
+def radar_fetch_raw() -> None:
+    """Download the latest NEXRAD scan (no decoding) — safe on a Pi, needs only the `aws` CLI."""
+    from weather_predictions.radar_raw import fetch_latest_raw
+
+    saved_path = fetch_latest_raw()
+    typer.echo(f"Downloaded {saved_path}" if saved_path else "Already up to date.")
+
+
+@app.command()
+def radar_backfill_raw(
+    start: str = typer.Argument(..., help="Start, ISO 8601 e.g. 2026-07-04T00:00:00."),
+    end: str = typer.Argument(..., help="End, ISO 8601."),
+) -> None:
+    """Download every raw NEXRAD scan in a UTC time range, no decoding (~12/hour, ~12-15MB each)."""
+    from weather_predictions.radar_raw import backfill_raw
+
+    downloaded = backfill_raw(datetime.fromisoformat(start), datetime.fromisoformat(end))
+    typer.echo(f"Downloaded {downloaded} raw radar scan(s).")
+
+
+@app.command()
+def radar_decode_pending(keep_raw: bool = typer.Option(False, help="Keep raw files after decoding.")) -> None:
+    """Decode raw scans sitting in data/radar/raw/ (e.g. synced over from the Pi). Needs `poetry install --with radar`."""
+    from weather_predictions.radar import decode_pending
+
+    decoded = decode_pending(keep_raw=keep_raw)
+    typer.echo(f"Decoded {decoded} radar scan(s).")
+
+
+@app.command()
 def radar_fetch(keep_raw: bool = typer.Option(False, help="Keep the raw ~12-15MB volume scan after decoding.")) -> None:
-    """Download + decode the latest NEXRAD scan into a stored reflectivity grid."""
+    """Download + decode the latest NEXRAD scan in one step. Needs `poetry install --with radar`."""
     from weather_predictions.radar import fetch_latest
 
     saved_path = fetch_latest(keep_raw=keep_raw)
@@ -75,7 +105,7 @@ def radar_backfill(
     end: str = typer.Argument(..., help="End, ISO 8601."),
     keep_raw: bool = typer.Option(False, help="Keep raw volume scans after decoding."),
 ) -> None:
-    """Download + decode every NEXRAD scan in a UTC time range (~12/hour, ~12-15MB raw each)."""
+    """Download + decode every NEXRAD scan in a UTC time range in one step. Needs `poetry install --with radar`."""
     from weather_predictions.radar import backfill_range
 
     saved_count = backfill_range(datetime.fromisoformat(start), datetime.fromisoformat(end), keep_raw=keep_raw)
