@@ -1,10 +1,17 @@
 """Feature engineering for multi-day-ahead rain and temperature forecasting.
 
 Everything is built from `daily_observations` — one row per calendar date
-with temp_max_c, temp_min_c, precip_mm, and a derived `rain` flag. That table
-is populated from two sources (see storage.py): CDO/GHCND for historical
-bulk, and a live METAR-derived aggregate (see `compute_live_daily_aggregate`)
-for the last day or two before CDO catches up.
+with temp_max_c, temp_min_c, precip_mm, a derived `rain` flag, and (once
+`weather enrich` has run) humidity_pct/pressure_hpa/wind_speed_kmh. That
+table is populated from three sources (see storage.py): CDO/GHCND for
+historical temp/precip, NOAA LCD for historical pressure/humidity/wind, and
+a live METAR-derived aggregate (see `compute_live_daily_aggregate`) for the
+last day or two before those catch up.
+
+Pressure trend (day-over-day change) is included because it's one of the
+cheapest, most predictive signals for incoming rain — a falling pressure_hpa
+tends to precede precipitation more reliably than temperature or precip
+history alone.
 """
 
 from __future__ import annotations
@@ -29,6 +36,11 @@ FEATURE_COLUMNS = [
     "temp_min_3d_mean_c",
     "precip_3d_mean_mm",
     "precip_7d_mean_mm",
+    "humidity_pct",
+    "pressure_hpa",
+    "pressure_delta_hpa",
+    "pressure_3d_mean_hpa",
+    "wind_speed_kmh",
     "month_sin",
     "month_cos",
     "doy_sin",
@@ -61,12 +73,26 @@ def compute_live_daily_aggregate(raw_df: pd.DataFrame) -> list[dict]:
         temp_max_c=("temperature_c", "max"),
         temp_min_c=("temperature_c", "min"),
         precip_mm=("precip_last_hour_mm", lambda s: s.fillna(0).sum()),
+        humidity_pct=("relative_humidity_pct", "mean"),
+        pressure_hpa=("barometric_pressure_pa", lambda s: s.mean() / 100),
+        wind_speed_kmh=("wind_speed_kmh", "mean"),
     ).reset_index()
 
     agg["rain"] = (agg["precip_mm"] >= RAIN_THRESHOLD_MM).astype(int)
     agg["source"] = "metar_live"
     agg["date"] = agg["local_date"].astype(str)
-    return agg[["date", "source", "temp_max_c", "temp_min_c", "precip_mm", "rain"]].to_dict("records")
+    columns = [
+        "date",
+        "source",
+        "temp_max_c",
+        "temp_min_c",
+        "precip_mm",
+        "rain",
+        "humidity_pct",
+        "pressure_hpa",
+        "wind_speed_kmh",
+    ]
+    return agg[columns].to_dict("records")
 
 
 def build_daily_features(daily_records: list[dict]) -> pd.DataFrame:
@@ -91,6 +117,8 @@ def build_daily_features(daily_records: list[dict]) -> pd.DataFrame:
     df["temp_min_3d_mean_c"] = df["temp_min_c"].rolling(3, min_periods=1).mean()
     df["precip_3d_mean_mm"] = df["precip_mm"].rolling(3, min_periods=1).mean()
     df["precip_7d_mean_mm"] = df["precip_mm"].rolling(7, min_periods=1).mean()
+    df["pressure_delta_hpa"] = df["pressure_hpa"] - df["pressure_hpa"].shift(1)
+    df["pressure_3d_mean_hpa"] = df["pressure_hpa"].rolling(3, min_periods=1).mean()
 
     return df
 

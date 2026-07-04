@@ -1,4 +1,4 @@
-"""Command-line entrypoint: `weather fetch|backfill|train|predict|evaluate|status`."""
+"""Command-line entrypoint: `weather fetch|backfill|enrich|train|predict|evaluate|status`."""
 
 from __future__ import annotations
 
@@ -44,6 +44,20 @@ def backfill(
 
 
 @app.command()
+def enrich(
+    start: str = typer.Option("2005-01-01", help="Start date, YYYY-MM-DD."),
+    end: str = typer.Option(None, help="End date, YYYY-MM-DD (defaults to today)."),
+) -> None:
+    """Fill in pressure/humidity/wind for existing days from NOAA LCD (no token needed)."""
+    from weather_predictions.enrich import run as run_enrich
+
+    start_date = date.fromisoformat(start)
+    end_date = date.fromisoformat(end) if end else None
+    inserted = run_enrich(start_date, end_date)
+    typer.echo(f"Upserted {inserted} day(s) of pressure/humidity/wind data.")
+
+
+@app.command()
 def status() -> None:
     """Show how much history has been collected and whether training is possible yet."""
     daily = build_daily_features(fetch_all_daily())
@@ -52,6 +66,8 @@ def status() -> None:
     if not daily.empty:
         typer.echo(f"Date range: {daily['date'].min().date()} to {daily['date'].max().date()}")
         typer.echo(daily["source"].value_counts().to_string())
+        enriched = daily["pressure_hpa"].notna().sum() if "pressure_hpa" in daily else 0
+        typer.echo(f"Days with pressure/humidity/wind (via `weather enrich`): {enriched}")
     typer.echo(f"Model trained: {'yes' if MODEL_PATH.exists() else 'no'} ({MODEL_PATH})")
     if n_days < MIN_TRAINING_DAYS:
         typer.echo(f"Need {MIN_TRAINING_DAYS - n_days} more day(s) — run `weather backfill` for bulk history.")

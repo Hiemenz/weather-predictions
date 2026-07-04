@@ -12,13 +12,21 @@ model to predict rain probability and high/low temperature 1-3 days out.
   Requires a free token: sign up at https://www.ncdc.noaa.gov/cdo-web/token
   (instant, email only) and put it in a `.env` file as `NOAA_CDO_TOKEN=...`.
   GHCND typically lags a few days behind real time before data is finalized.
+- **NOAA LCD (`weather enrich`)** — decades of daily pressure/humidity/wind,
+  which GHCND's daily summaries don't carry. Plain static CSV files, no
+  token needed. Pressure trend is one of the cheapest, most useful signals
+  for predicting incoming rain, so this is what pushed the t+2/t+3 rain
+  classifier from losing to the persistence baseline to beating or matching
+  it (see "Results" below). Also lags a few days behind real time.
 - **NWS (`weather fetch`)** — live observations for the last ~1-2 days,
-  used to fill the gap between "now" and whatever GHCND has finalized so
-  far. Also used to fetch the official forecast for comparison.
+  used to fill the gap between "now" and whatever GHCND/LCD have finalized
+  so far. Also used to fetch the official forecast for comparison.
 
-Both feed into one `daily_observations` table (date, temp_max_c, temp_min_c,
-precip_mm, rain). GHCND is authoritative and always wins if both sources
-have a row for the same date; the NWS-derived row only fills the gap.
+All three feed into one `daily_observations` table. GHCND owns temp_max_c/
+temp_min_c/precip_mm/rain (authoritative, always wins); LCD and the NWS
+live aggregate both write humidity_pct/pressure_hpa/wind_speed_kmh, since
+GHCND never provides those at all — whichever ran more recently wins for
+those columns, since there's no real "authoritative" source to defer to.
 
 ## Setup
 
@@ -29,7 +37,8 @@ poetry install
 ## Usage
 
 ```bash
-poetry run weather backfill --start 2000-01-01   # bulk historical load from CDO (run once)
+poetry run weather backfill --start 2000-01-01   # bulk historical temp/precip from CDO (run once)
+poetry run weather enrich --start 2000-01-01     # bulk historical pressure/humidity/wind from LCD (run once)
 poetry run weather fetch                          # pull latest NWS observations (run on a schedule)
 poetry run weather status                         # how much history is collected, ready to train?
 poetry run weather train                           # train the 1/2/3-day rain + temp models
@@ -60,13 +69,34 @@ build up a track record and see whether retraining on more data actually
 improves skill over the previous model version, not just whether the model
 beats the naive persistence baseline.
 
+## Results (Nashville, 2005-2026, 7,854 days)
+
+| Horizon | Rain accuracy (baseline) | Temp max MAE (baseline) | Temp min MAE (baseline) |
+|---|---|---|---|
+| t+1d | 0.65 (0.65 — tied) | 2.7°C (3.2°C) | 2.1°C (2.7°C) |
+| t+2d | 0.56 (0.55 — **beats it**) | 3.6°C (4.4°C) | 3.0°C (3.9°C) |
+| t+3d | 0.55 (0.57 — close) | 3.8°C (4.9°C) | 3.5°C (4.5°C) |
+
+Before adding pressure/humidity/wind (`weather enrich`), t+2d/t+3d rain
+accuracy was 0.53/0.51 — clearly losing to persistence. Pressure trend
+closed most of that gap. Temperature forecasting beats the naive baseline
+at every horizon either way.
+
 ## How it works
 
 - `nws_client.py` — wrapper around the NWS API (live observations, forecast).
-- `cdo_client.py` — wrapper around NOAA CDO/GHCND (bulk historical daily data).
-- `backfill.py` — pulls a date range of GHCND daily summaries and stores them.
+- `cdo_client.py` — wrapper around NOAA CDO/GHCND (bulk historical temp/precip).
+- `lcd_client.py` — downloads NOAA LCD's per-year CSVs (bulk historical
+  pressure/humidity/wind); shells out to `curl` for the actual download
+  since some sandboxed environments throttle Python's own HTTP stack far
+  below what curl gets for the same ~10MB files.
+- `backfill.py` / `enrich.py` — drive the CDO/LCD clients over a date range,
+  persisting after each year so progress survives an interruption instead
+  of being lost if something goes wrong mid-run.
 - `storage.py` — SQLite storage: raw NWS observations, unified daily
-  observations (source-tagged), predictions, and model performance history.
+  observations (source-tagged, with GHCND/LCD/live-METAR column ownership
+  kept separate so none of them can clobber a field they don't own),
+  predictions, and model performance history.
 - `features.py` — turns `daily_observations` into a feature-engineered
   frame (rolling means, day-over-day trend, calendar seasonality) and
   builds the rain/temp-max/temp-min targets for each forecast horizon.
@@ -83,9 +113,10 @@ beats the naive persistence baseline.
 ## Location
 
 Configured in `src/weather_predictions/config.py` — currently Nashville, TN
-(`STATION_ID` for live NWS data, `GHCND_STATION_ID` for CDO backfill, both
-Nashville International Airport). Change `LATITUDE`, `LONGITUDE`, and both
-station IDs there to point elsewhere.
+(`STATION_ID` for live NWS data, `GHCND_STATION_ID` for CDO backfill,
+`LCD_STATION_ID` for LCD enrichment — all Nashville International Airport,
+just identified differently by each NOAA system). Change `LATITUDE`,
+`LONGITUDE`, and all three station IDs there to point elsewhere.
 
 ## Caveats
 

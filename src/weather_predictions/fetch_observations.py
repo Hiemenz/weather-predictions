@@ -6,10 +6,11 @@ NWS only retains a rolling ~1-2 day window of raw observations per station, so
 running this on a gap longer than that window will silently miss data.
 
 Also derives a live daily aggregate for the last couple of days and stores it
-in `daily_observations`, since CDO/GHCND data lags a few days before it's
-published — this keeps "today"/"yesterday" available for feature engineering
-in the meantime. It only fills gaps; once CDO backfill covers a date, that
-authoritative record wins.
+in `daily_observations`, since CDO/GHCND/LCD data all lag a few days before
+they're published — this keeps "today"/"yesterday" available for feature
+engineering in the meantime. Temp/precip/rain only fill gaps GHCND hasn't
+covered yet; humidity/pressure/wind always get filled in live, since GHCND
+never provides those at all (LCD is the only other source, and lags too).
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from weather_predictions.nws_client import get_observations
 from weather_predictions.storage import (
     count_observations,
     fetch_all_observations,
+    upsert_daily_enrichment,
     upsert_daily_from_metar,
     upsert_observations,
 )
@@ -37,6 +39,7 @@ def run(station_id: str = STATION_ID) -> int:
     raw_df = raw_to_frame(fetch_all_observations())
     daily_rows = compute_live_daily_aggregate(raw_df)
     daily_inserted = upsert_daily_from_metar(daily_rows)
+    upsert_daily_enrichment(daily_rows)
 
     total = count_observations()
     log.info(

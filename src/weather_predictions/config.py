@@ -18,6 +18,11 @@ STATION_ID = "KBNA"
 # Nashville International Airport. Verified via /cdo-web/api/v2/stations lookup.
 GHCND_STATION_ID = "GHCND:USW00013897"
 
+# Same station's USAF-WBAN id, used for NOAA Local Climatological Data (LCD)
+# bulk CSV files — the source for daily pressure/humidity/wind, which GHCND's
+# daily summaries don't carry. Verified against the LCD file directory listing.
+LCD_STATION_ID = "72327013897"
+
 USER_AGENT = "weather-predictions (mckevinaaa24@gmail.com)"
 API_BASE = "https://api.weather.gov"
 
