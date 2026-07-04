@@ -23,6 +23,14 @@ GHCND_STATION_ID = "GHCND:USW00013897"
 # daily summaries don't carry. Verified against the LCD file directory listing.
 LCD_STATION_ID = "72327013897"
 
+# Nearest NEXRAD radar site (raw Level II reflectivity/velocity sweeps),
+# verified via api.weather.gov's `radarStation` field for this lat/lon.
+RADAR_STATION_ID = "KOHX"
+
+# Public NEXRAD Level II archive on AWS Open Data. Migrated from the
+# deprecated `noaa-nexrad-level2` bucket in September 2025.
+RADAR_S3_BUCKET = "unidata-nexrad-level2"
+
 USER_AGENT = "weather-predictions (mckevinaaa24@gmail.com)"
 API_BASE = "https://api.weather.gov"
 
@@ -32,6 +40,7 @@ CDO_TOKEN = os.getenv("NOAA_CDO_TOKEN")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data"
 MODELS_DIR = PROJECT_ROOT / "models"
+RADAR_DATA_DIR = DATA_DIR / "radar"
 
 DB_PATH = DATA_DIR / "observations.sqlite"
 MODEL_PATH = MODELS_DIR / "precip_model.joblib"

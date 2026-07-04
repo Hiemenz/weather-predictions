@@ -51,3 +51,12 @@ poetry run weather predict
 `backfill`/`enrich` only need to be run once (plus occasionally again to
 pick up newly-published years) — they're not part of the Pi's recurring
 cron job, since they cover history, not the live gap.
+
+## Radar (not yet part of the cron job)
+
+`weather radar-fetch`/`radar-backfill` are separate from the above — see
+the main README's "Radar" section. They pull much heavier dependencies
+(Py-ART, cartopy, matplotlib, dask) and need the `aws` CLI, and a scan
+arrives every ~5 minutes at ~12-15MB raw. Whether to run this on the Pi or
+the Mac is worth deciding deliberately (Pi storage/CPU vs. wanting
+continuous collection) before adding it to `install_cron.sh`.
