@@ -1,4 +1,4 @@
-"""Command-line entrypoint: `weather fetch|backfill|enrich|train|predict|evaluate|status`."""
+"""Command-line entrypoint: `weather fetch|backfill|enrich|radar-fetch|radar-backfill|train|predict|evaluate|status`."""
 
 from __future__ import annotations
 
@@ -55,6 +55,31 @@ def enrich(
     end_date = date.fromisoformat(end) if end else None
     inserted = run_enrich(start_date, end_date)
     typer.echo(f"Upserted {inserted} day(s) of pressure/humidity/wind data.")
+
+
+@app.command()
+def radar_fetch(keep_raw: bool = typer.Option(False, help="Keep the raw ~12-15MB volume scan after decoding.")) -> None:
+    """Download + decode the latest NEXRAD scan into a stored reflectivity grid."""
+    from weather_predictions.radar import fetch_latest
+
+    saved_path = fetch_latest(keep_raw=keep_raw)
+    if saved_path is None:
+        typer.echo("No scans available yet.")
+        raise typer.Exit(code=1)
+    typer.echo(f"Saved {saved_path}")
+
+
+@app.command()
+def radar_backfill(
+    start: str = typer.Argument(..., help="Start, ISO 8601 e.g. 2026-07-04T00:00:00."),
+    end: str = typer.Argument(..., help="End, ISO 8601."),
+    keep_raw: bool = typer.Option(False, help="Keep raw volume scans after decoding."),
+) -> None:
+    """Download + decode every NEXRAD scan in a UTC time range (~12/hour, ~12-15MB raw each)."""
+    from weather_predictions.radar import backfill_range
+
+    saved_count = backfill_range(datetime.fromisoformat(start), datetime.fromisoformat(end), keep_raw=keep_raw)
+    typer.echo(f"Decoded {saved_count} radar scan(s).")
 
 
 @app.command()

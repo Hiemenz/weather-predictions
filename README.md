@@ -28,11 +28,21 @@ live aggregate both write humidity_pct/pressure_hpa/wind_speed_kmh, since
 GHCND never provides those at all — whichever ran more recently wins for
 those columns, since there's no real "authoritative" source to defer to.
 
+- **NEXRAD Level II (`weather radar-fetch` / `radar-backfill`)** — raw radar
+  reflectivity sweeps, not currently used by the tabular rain/temp model.
+  This is the foundation for a *separate*, future radar-based nowcasting
+  model (see "Radar" below) — a genuinely different kind of model (spatial
+  image sequences, not daily tabular features).
+
 ## Setup
 
 ```bash
 poetry install
 ```
+
+Radar backfill/fetch also needs the AWS CLI on PATH (`brew install awscli` /
+`apt install awscli`) — no AWS account or credentials required, the NEXRAD
+archive bucket is public.
 
 ## Usage
 
@@ -44,6 +54,9 @@ poetry run weather status                         # how much history is collecte
 poetry run weather train                           # train the 1/2/3-day rain + temp models
 poetry run weather predict                         # predict next 3 days, stores predictions for scoring
 poetry run weather evaluate                        # score past predictions against what actually happened
+
+poetry run weather radar-fetch                     # download + decode the latest radar scan
+poetry run weather radar-backfill START END        # e.g. 2026-07-04T00:00:00 2026-07-04T06:00:00
 ```
 
 ## Deployment: Pi collects, Mac trains
@@ -82,6 +95,36 @@ accuracy was 0.53/0.51 — clearly losing to persistence. Pressure trend
 closed most of that gap. Temperature forecasting beats the naive baseline
 at every horizon either way.
 
+## Radar
+
+`weather radar-fetch`/`radar-backfill` pull raw NEXRAD Level II volume scans
+for KOHX (Nashville radar) from NOAA's public archive on AWS
+(`unidata-nexrad-level2`, no credentials needed — free/open data), decode
+the lowest-elevation reflectivity sweep with
+[Py-ART](https://arm-doe.github.io/pyart/), and project it onto a 400x400
+grid (200km x 200km, 1km resolution) centered on the radar. Each decoded
+frame is saved as a compressed `.npz` (~100-150KB) in `data/radar/grids/` —
+the raw ~12-15MB volume scan is deleted after decoding by default
+(`--keep-raw` to retain it), since NOAA's archive is permanent back to 1991
+and there's no need to hoard it locally, especially on a space-constrained
+Pi.
+
+This is **data collection only** — there's no radar-based prediction model
+yet. That would be a genuinely different model from the tabular one above:
+a sequence of these reflectivity grids over time, fed into something like
+optical-flow extrapolation or a ConvLSTM, to predict where precipitation
+moves next (nowcasting). Building that requires first accumulating a real
+time series of frames, the same way the tabular model needed accumulated
+daily history before it could train.
+
+A scan arrives roughly every 5 minutes (~12/hour, ~3-4GB/day of raw
+downloads before cleanup). Given the heavier dependency footprint
+(Py-ART pulls in cartopy, matplotlib, dask, xarray — ~50 packages) and
+Raspberry Pi's typically weaker CPU/storage, it's worth deciding
+deliberately whether continuous radar collection runs on the Pi alongside
+the existing tabular fetch, or on the Mac instead, before wiring up a cron
+job for it.
+
 ## How it works
 
 - `nws_client.py` — wrapper around the NWS API (live observations, forecast).
@@ -109,14 +152,24 @@ at every horizon either way.
   comparison.
 - `evaluate.py` — scores stored predictions against real outcomes once
   they're known, tracked per model version over time.
+- `radar_client.py` — lists/downloads NEXRAD volume scans from the public
+  S3 archive via the `aws` CLI (faster and dependency-conflict-free vs.
+  `boto3`/`s3fs` here).
+- `radar_processing.py` — decodes a volume scan with Py-ART into a fixed
+  Cartesian reflectivity grid, with save/load for the compressed `.npz`
+  format frames are stored in.
+- `radar.py` — orchestrates fetch/backfill: download → decode → save →
+  delete the raw file, with progress logging per scan.
 
 ## Location
 
 Configured in `src/weather_predictions/config.py` — currently Nashville, TN
 (`STATION_ID` for live NWS data, `GHCND_STATION_ID` for CDO backfill,
-`LCD_STATION_ID` for LCD enrichment — all Nashville International Airport,
-just identified differently by each NOAA system). Change `LATITUDE`,
-`LONGITUDE`, and all three station IDs there to point elsewhere.
+`LCD_STATION_ID` for LCD enrichment, `RADAR_STATION_ID` for NEXRAD — all
+Nashville, just identified differently by each NOAA system;
+`RADAR_STATION_ID` is the actual radar site (KOHX), a few miles from the
+airport station the others use). Change `LATITUDE`, `LONGITUDE`, and all
+station IDs there to point elsewhere.
 
 ## Caveats
 
