@@ -44,6 +44,35 @@ def test_save_and_load_grid_roundtrip(tmp_path):
     np.testing.assert_array_equal(loaded["reflectivity_dbz"], frame["reflectivity_dbz"])
 
 
+def test_radar_raw_module_never_imports_pyart():
+    """The whole point of radar_raw.py is that it runs on a Pi without the
+    heavy `radar` dependency group (Py-ART/Cartopy) installed at all."""
+    import sys
+
+    was_loaded_before = "pyart" in sys.modules
+    import weather_predictions.radar_raw  # noqa: F401
+
+    if not was_loaded_before:
+        assert "pyart" not in sys.modules
+
+
+def test_fetch_latest_raw_skips_existing_file(monkeypatch, tmp_path):
+    from weather_predictions import radar_raw
+
+    existing = tmp_path / "KOHX20260704_120600_V06"
+    existing.write_bytes(b"already here")
+
+    monkeypatch.setattr(radar_raw, "latest_scan_key", lambda station: "2026/07/04/KOHX/KOHX20260704_120600_V06")
+
+    def _fail_if_called(*a, **k):
+        raise AssertionError("download_scan should not be called when the file already exists")
+
+    monkeypatch.setattr(radar_raw, "download_scan", _fail_if_called)
+
+    result = radar_raw.fetch_latest_raw(dest_dir=tmp_path)
+    assert result is None
+
+
 def test_list_scans_filters_metadata_sidecars(monkeypatch):
     fake_ls_output = (
         "2026-07-04 12:01:09   15000000 KOHX20260704_120109_V06\n"

@@ -97,17 +97,28 @@ at every horizon either way.
 
 ## Radar
 
-`weather radar-fetch`/`radar-backfill` pull raw NEXRAD Level II volume scans
-for KOHX (Nashville radar) from NOAA's public archive on AWS
-(`unidata-nexrad-level2`, no credentials needed — free/open data), decode
-the lowest-elevation reflectivity sweep with
-[Py-ART](https://arm-doe.github.io/pyart/), and project it onto a 400x400
-grid (200km x 200km, 1km resolution) centered on the radar. Each decoded
-frame is saved as a compressed `.npz` (~100-150KB) in `data/radar/grids/` —
-the raw ~12-15MB volume scan is deleted after decoding by default
-(`--keep-raw` to retain it), since NOAA's archive is permanent back to 1991
-and there's no need to hoard it locally, especially on a space-constrained
-Pi.
+Raw NEXRAD Level II volume scans for KOHX (Nashville radar) come from
+NOAA's public archive on AWS (`unidata-nexrad-level2`, no credentials
+needed — free/open data). Decoding the lowest-elevation reflectivity sweep
+with [Py-ART](https://arm-doe.github.io/pyart/) projects it onto a 400x400
+grid (200km x 200km, 1km resolution) centered on the radar, saved as a
+compressed `.npz` (~100-150KB vs. ~12-15MB raw) in `data/radar/grids/`.
+
+Py-ART pulls in Cartopy, which has **no prebuilt ARM wheels** — a poor fit
+for a Raspberry Pi. So collection and decoding are split, same idea as the
+CDO/LCD/NWS split above:
+
+- `weather radar-fetch-raw` — downloads only, no decoding. Needs just the
+  `aws` CLI, nothing from the `radar` poetry group. This is what runs
+  continuously on the Pi (`scripts/install_cron.sh` sets this up alongside
+  the tabular `weather fetch`, every 5 minutes to match the scan cadence).
+- `weather radar-decode-pending` — decodes whatever raw files it finds in
+  `data/radar/raw/` (e.g. synced over from the Pi) and deletes them after.
+  Needs `poetry install --with radar`. Run this wherever Py-ART is
+  installed (the Mac).
+- `weather radar-fetch` / `radar-backfill` — download + decode in one step,
+  for convenience when running directly on a machine that has the `radar`
+  group installed (i.e. not the Pi).
 
 This is **data collection only** — there's no radar-based prediction model
 yet. That would be a genuinely different model from the tabular one above:
@@ -116,14 +127,6 @@ optical-flow extrapolation or a ConvLSTM, to predict where precipitation
 moves next (nowcasting). Building that requires first accumulating a real
 time series of frames, the same way the tabular model needed accumulated
 daily history before it could train.
-
-A scan arrives roughly every 5 minutes (~12/hour, ~3-4GB/day of raw
-downloads before cleanup). Given the heavier dependency footprint
-(Py-ART pulls in cartopy, matplotlib, dask, xarray — ~50 packages) and
-Raspberry Pi's typically weaker CPU/storage, it's worth deciding
-deliberately whether continuous radar collection runs on the Pi alongside
-the existing tabular fetch, or on the Mac instead, before wiring up a cron
-job for it.
 
 ## How it works
 
