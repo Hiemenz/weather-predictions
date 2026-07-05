@@ -57,6 +57,8 @@ poetry run weather evaluate                        # score past predictions agai
 
 poetry run weather radar-fetch                     # download + decode the latest radar scan
 poetry run weather radar-backfill START END        # e.g. 2026-07-04T00:00:00 2026-07-04T06:00:00
+poetry run weather radar-nowcast                    # forecast the reflectivity grid 30min ahead
+poetry run weather radar-nowcast-evaluate            # score past radar nowcasts against real outcomes
 ```
 
 ## Deployment: Pi collects, Mac trains
@@ -120,13 +122,34 @@ CDO/LCD/NWS split above:
   for convenience when running directly on a machine that has the `radar`
   group installed (i.e. not the Pi).
 
-This is **data collection only** — there's no radar-based prediction model
-yet. That would be a genuinely different model from the tabular one above:
-a sequence of these reflectivity grids over time, fed into something like
-optical-flow extrapolation or a ConvLSTM, to predict where precipitation
-moves next (nowcasting). Building that requires first accumulating a real
-time series of frames, the same way the tabular model needed accumulated
-daily history before it could train.
+### Nowcasting (experimental)
+
+`weather radar-nowcast` forecasts the reflectivity grid some number of
+minutes ahead (`--lead-minutes`, default 30) using two methods, same
+"does it beat naive" framing as the tabular model:
+
+- **persistence** — the naive baseline: assume nothing moves.
+- **optical_flow** — estimates a motion field between the two most recent
+  frames with dense optical flow (OpenCV's Farneback method) and advects
+  the latest frame forward along it.
+
+Only a handful of frames exist so far (radar collection just started), so
+this deliberately doesn't attempt a data-hungry model like a ConvLSTM yet —
+optical flow needs only two consecutive frames, not weeks of accumulated
+history, to produce a real (if rough) forecast. Both forecasts are saved
+to `data/radar/nowcasts/` and logged to the `radar_nowcasts` table.
+`weather radar-nowcast-evaluate` later scores them (mean absolute error in
+dBZ, plus critical success index at a 20dBZ "is it raining" threshold)
+against whatever real grid decodes closest to the forecast's target time,
+storing the result in `radar_nowcast_performance` — once enough scored
+history accumulates, it'll show whether optical flow is actually beating
+persistence, the same way `weather evaluate` tracks the tabular model
+against its baseline.
+
+A true ConvLSTM/deep sequence model is future work — it needs a real
+accumulated time series of frames (days to weeks, once the Pi is
+continuously collecting via `radar-fetch-raw`) to train on rather than
+overfitting to nine frames from one afternoon.
 
 ## How it works
 
@@ -163,6 +186,13 @@ daily history before it could train.
   format frames are stored in.
 - `radar.py` — orchestrates fetch/backfill: download → decode → save →
   delete the raw file, with progress logging per scan.
+- `radar_nowcast.py` — forecasts the reflectivity grid N minutes ahead via
+  optical-flow extrapolation (OpenCV) plus a persistence baseline, storing
+  both for later scoring.
+- `radar_nowcast_evaluate.py` — scores stored radar nowcasts against the
+  real grid that eventually decoded closest to the forecast time (MAE +
+  critical success index), tracked over time like `evaluate.py` does for
+  the tabular model.
 
 ## Location
 
