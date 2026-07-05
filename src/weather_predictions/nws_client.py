@@ -44,6 +44,33 @@ def get_forecast(office_grid_url: str) -> dict[str, Any]:
     return _get(office_grid_url)
 
 
+def get_hourly_forecast(hourly_forecast_url: str) -> dict[str, Any]:
+    """Fetch the hourly forecast for a gridpoint's `forecastHourly` URL (from
+    get_point_metadata) — same per-period shape as get_forecast's 12-hour
+    periods, just one row per hour, out to ~7 days."""
+    return _get(hourly_forecast_url)
+
+
+def _fahrenheit_to_c(temp_f: float | None) -> float | None:
+    return None if temp_f is None else (temp_f - 32) * 5 / 9
+
+
+def parse_hourly_periods(forecast: dict[str, Any], hours: int = 24) -> list[dict[str, Any]]:
+    """Flatten the first `hours` periods of an hourly forecast into flat records."""
+    periods = forecast["properties"]["periods"][:hours]
+    return [
+        {
+            "start_time": p["startTime"],
+            "temperature_c": _fahrenheit_to_c(p.get("temperature")) if p.get("temperatureUnit") == "F" else p.get("temperature"),
+            "precip_probability_pct": _value(p.get("probabilityOfPrecipitation")),
+            "wind_speed": p.get("windSpeed"),
+            "wind_direction": p.get("windDirection"),
+            "short_forecast": p.get("shortForecast"),
+        }
+        for p in periods
+    ]
+
+
 def parse_observation(feature: dict[str, Any]) -> dict[str, Any]:
     """Flatten a single GeoJSON observation feature into a flat record."""
     props = feature["properties"]
