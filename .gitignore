@@ -9,3 +9,4 @@ models/*.joblib
 .env
 .claude/
 data/radar/
+data/hurdat2.txt

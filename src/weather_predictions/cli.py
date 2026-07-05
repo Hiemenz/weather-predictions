@@ -1,4 +1,4 @@
-"""Command-line entrypoint: `weather fetch|backfill|enrich|radar-fetch-raw|radar-backfill-raw|radar-decode-pending|radar-fetch|radar-backfill|train|predict|evaluate|status`."""
+"""Command-line entrypoint: `weather fetch|backfill|enrich|radar-fetch-raw|radar-backfill-raw|radar-decode-pending|radar-fetch|radar-backfill|hurricane-backfill|hurricane-train|hurricane-predict|hurricane-evaluate|train|predict|evaluate|status`."""
 
 from __future__ import annotations
 
@@ -110,6 +110,83 @@ def radar_backfill(
 
     saved_count = backfill_range(datetime.fromisoformat(start), datetime.fromisoformat(end), keep_raw=keep_raw)
     typer.echo(f"Decoded {saved_count} radar scan(s).")
+
+
+@app.command()
+def hurricane_backfill(
+    dest: str = typer.Option(None, help="Where to save the downloaded HURDAT2 file (defaults to data/hurdat2.txt)."),
+) -> None:
+    """Download NOAA/NHC's Atlantic best-track history (HURDAT2) and store every fix. Run once."""
+    from pathlib import Path
+
+    from weather_predictions.config import DATA_DIR
+    from weather_predictions.hurricane_client import sync_hurdat2
+
+    dest_path = Path(dest) if dest else DATA_DIR / "hurdat2.txt"
+    inserted = sync_hurdat2(dest_path)
+    typer.echo(f"Upserted {inserted} hurricane fix(es) from {dest_path}.")
+
+
+@app.command()
+def hurricane_train(
+    test_years: int = typer.Option(5, help="Most recent N storm seasons held out as the test set."),
+) -> None:
+    """Train (or retrain) the hurricane track/intensity model on all backfilled HURDAT2 history."""
+    from weather_predictions.hurricane_train import NotEnoughDataError as HurricaneNotEnoughDataError
+    from weather_predictions.hurricane_train import train as run_hurricane_train
+
+    try:
+        result = run_hurricane_train(test_years=test_years)
+    except HurricaneNotEnoughDataError as e:
+        typer.echo(str(e))
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Trained on {result.n_fixes} fixes.")
+    for hr in result.horizons:
+        typer.echo(
+            f"  t+{hr.horizon_hours}h: track_err={hr.track_error_km:.0f}km (baseline {hr.track_baseline_error_km:.0f}km)"
+            f"  wind_mae={hr.wind_mae_kt:.1f}kt (baseline {hr.wind_baseline_mae_kt:.1f}kt)"
+        )
+
+
+@app.command()
+def hurricane_predict() -> None:
+    """Forecast currently active tropical cyclones' track/intensity; stores predictions for later scoring."""
+    from weather_predictions.hurricane_predict import ModelNotTrainedError as HurricaneModelNotTrainedError
+    from weather_predictions.hurricane_predict import predict as run_hurricane_predict
+
+    try:
+        forecasts = run_hurricane_predict()
+    except HurricaneModelNotTrainedError as e:
+        typer.echo(str(e))
+        raise typer.Exit(code=1)
+
+    if not forecasts:
+        typer.echo("No active tropical cyclones right now.")
+        return
+    for f in forecasts:
+        typer.echo(f"{f.name} ({f.storm_id}, {f.classification}) as of {f.as_of}:")
+        for hp in f.horizons:
+            typer.echo(
+                f"  t+{hp.horizon_hours}h ({hp.valid_at}): lat={hp.lat_pred:.1f} lon={hp.lon_pred:.1f} "
+                f"wind={hp.wind_pred_kt:.0f}kt"
+            )
+
+
+@app.command()
+def hurricane_evaluate() -> None:
+    """Compare past hurricane forecasts against subsequent HURDAT2 fixes, and log skill over time."""
+    from weather_predictions.hurricane_evaluate import evaluate as run_hurricane_evaluate
+
+    scored, pending = run_hurricane_evaluate()
+    if not scored:
+        typer.echo("No hurricane forecasts old enough to score yet.")
+    for r in scored:
+        typer.echo(
+            f"model {r.model_trained_at} | t+{r.horizon_hours}h | n={r.n_samples} | "
+            f"track_err={r.track_error_km:.0f}km wind_mae={r.wind_mae_kt:.1f}kt"
+        )
+    typer.echo(f"Pending (no actual fix yet): {pending}")
 
 
 @app.command()
