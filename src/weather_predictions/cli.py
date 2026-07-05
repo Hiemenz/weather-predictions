@@ -1,4 +1,4 @@
-"""Command-line entrypoint: `weather fetch|backfill|enrich|radar-fetch-raw|radar-backfill-raw|radar-decode-pending|radar-fetch|radar-backfill|train|predict|evaluate|status`."""
+"""Command-line entrypoint: `weather fetch|backfill|enrich|forecast-hourly|radar-fetch-raw|radar-backfill-raw|radar-decode-pending|radar-fetch|radar-backfill|train|predict|evaluate|status`."""
 
 from __future__ import annotations
 
@@ -55,6 +55,22 @@ def enrich(
     end_date = date.fromisoformat(end) if end else None
     inserted = run_enrich(start_date, end_date)
     typer.echo(f"Upserted {inserted} day(s) of pressure/humidity/wind data.")
+
+
+@app.command()
+def forecast_hourly(hours: int = typer.Option(24, help="How many hourly periods to show.")) -> None:
+    """Show NWS's own hourly temp/precip-probability forecast (authoritative, not the 1-3 day model)."""
+    from weather_predictions.config import LATITUDE, LONGITUDE
+    from weather_predictions.nws_client import get_hourly_forecast, get_point_metadata, parse_hourly_periods
+
+    point = get_point_metadata(LATITUDE, LONGITUDE)
+    forecast = get_hourly_forecast(point["properties"]["forecastHourly"])
+    for period in parse_hourly_periods(forecast, hours):
+        typer.echo(
+            f"{period['start_time']}: {period['temperature_c']:.0f}C, "
+            f"{period['precip_probability_pct'] or 0}% precip, {period['wind_speed']} {period['wind_direction']}, "
+            f"{period['short_forecast']}"
+        )
 
 
 @app.command()
