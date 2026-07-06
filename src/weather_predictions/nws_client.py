@@ -94,3 +94,23 @@ def get_observations(
 def get_latest_observation(station_id: str) -> dict[str, Any]:
     data = _get(f"/stations/{station_id}/observations/latest")
     return parse_observation(data)
+
+
+def get_active_alerts(lat: float, lon: float) -> list[dict[str, Any]]:
+    """Active watches/warnings/advisories covering (lat, lon), most severe first."""
+    data = _get("/alerts/active", params={"point": f"{lat},{lon}"})
+    alerts = []
+    for feature in data.get("features", []):
+        props = feature["properties"]
+        alerts.append(
+            {
+                "id": props.get("id"),
+                "event": props.get("event"),
+                "severity": props.get("severity"),
+                "headline": props.get("headline"),
+                "area_desc": props.get("areaDesc"),
+                "effective": props.get("effective"),
+                "expires": props.get("expires"),
+            }
+        )
+    return alerts

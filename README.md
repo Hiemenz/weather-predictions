@@ -59,6 +59,7 @@ poetry run weather radar-fetch                     # download + decode the lates
 poetry run weather radar-backfill START END        # e.g. 2026-07-04T00:00:00 2026-07-04T06:00:00
 poetry run weather radar-nowcast                    # forecast the reflectivity grid 30min ahead
 poetry run weather radar-nowcast-evaluate            # score past radar nowcasts against real outcomes
+poetry run weather storm-check                       # NWS active alerts + experimental radar-based rain check
 ```
 
 ## Deployment: Pi collects, Mac trains
@@ -151,9 +152,26 @@ accumulated time series of frames (days to weeks, once the Pi is
 continuously collecting via `radar-fetch-raw`) to train on rather than
 overfitting to nine frames from one afternoon.
 
+## Storm alerts
+
+`weather storm-check` combines two independent signals:
+
+- **NWS active alerts** — official, real-time severe thunderstorm/tornado/
+  flood watches and warnings for your location (`/alerts/active`). This is
+  the authoritative signal; if it says there's a warning, trust it.
+- **Radar nowcast (experimental)** — runs a fresh optical-flow nowcast (see
+  "Nowcasting" above) and checks whether the forecasted reflectivity grid
+  shows rain reaching `LATITUDE`/`LONGITUDE` (config.py) within
+  `--lead-minutes` (default 30). This is a rougher, best-effort supplement
+  built on the same nowcast model, geolocated by converting your lat/lon
+  into a pixel offset from the radar site via a flat-earth approximation —
+  fine at this scale, but not survey-grade. If fewer than 2 radar frames
+  exist yet, this half just says so and the NWS alerts still show.
+
 ## How it works
 
-- `nws_client.py` — wrapper around the NWS API (live observations, forecast).
+- `nws_client.py` — wrapper around the NWS API (live observations, forecast,
+  and active alerts).
 - `cdo_client.py` — wrapper around NOAA CDO/GHCND (bulk historical temp/precip).
 - `lcd_client.py` — downloads NOAA LCD's per-year CSVs (bulk historical
   pressure/humidity/wind); shells out to `curl` for the actual download
@@ -193,6 +211,9 @@ overfitting to nine frames from one afternoon.
   real grid that eventually decoded closest to the forecast time (MAE +
   critical success index), tracked over time like `evaluate.py` does for
   the tabular model.
+- `home_precip_check.py` — runs a fresh radar nowcast and checks whether it
+  shows rain reaching a specific lat/lon (converted to a grid pixel via a
+  flat-earth approximation), used by `weather storm-check`.
 
 ## Location
 
