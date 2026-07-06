@@ -1,4 +1,4 @@
-"""Command-line entrypoint: `weather fetch|backfill|enrich|radar-fetch-raw|radar-backfill-raw|radar-decode-pending|radar-fetch|radar-backfill|radar-nowcast|radar-nowcast-evaluate|storm-check|train|predict|evaluate|status`."""
+"""Command-line entrypoint: `weather fetch|backfill|enrich|radar-fetch-raw|radar-backfill-raw|radar-decode-pending|radar-fetch|radar-backfill|radar-nowcast|radar-nowcast-evaluate|radar-image|storm-check|train|predict|evaluate|status`."""
 
 from __future__ import annotations
 
@@ -145,6 +145,30 @@ def radar_nowcast_evaluate() -> None:
             f"mae={r.mae_dbz:.2f}dBZ csi={r.csi:.2f} (threshold {r.csi_threshold_dbz:.0f}dBZ)"
         )
     typer.echo(f"Pending (no actual grid yet): {pending}")
+
+
+@app.command()
+def radar_image(
+    radius_km: float = typer.Option(50.0, help="Region radius (km) around LATITUDE/LONGITUDE to render."),
+    output: str = typer.Option("data/radar/radar.png", help="Where to save the rendered PNG."),
+) -> None:
+    """Render the current reflectivity grid + motion arrows as a 7-color PNG for a Waveshare ACeP e-ink panel.
+
+    Needs `poetry install --with display` (Pillow + OpenCV, no Py-ART) —
+    works on the Pi given grids synced over from wherever decoding happened.
+    """
+    from pathlib import Path
+
+    from weather_predictions.radar_image import OutOfRadarRangeError, render as run_render
+    from weather_predictions.radar_nowcast import InsufficientFramesError
+
+    try:
+        result = run_render(radius_km=radius_km, output_path=Path(output))
+    except (InsufficientFramesError, OutOfRadarRangeError) as e:
+        typer.echo(str(e))
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Rendered {result.output_path} from frame {result.frame_timestamp} (+/-{result.region_radius_km:.0f}km).")
 
 
 @app.command()

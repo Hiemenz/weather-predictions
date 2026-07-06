@@ -59,6 +59,7 @@ poetry run weather radar-fetch                     # download + decode the lates
 poetry run weather radar-backfill START END        # e.g. 2026-07-04T00:00:00 2026-07-04T06:00:00
 poetry run weather radar-nowcast                    # forecast the reflectivity grid 30min ahead
 poetry run weather radar-nowcast-evaluate            # score past radar nowcasts against real outcomes
+poetry run weather radar-image --radius-km 50        # render a 7-color + motion-arrow PNG for an e-ink panel
 poetry run weather storm-check                       # NWS active alerts + experimental radar-based rain check
 ```
 
@@ -152,6 +153,33 @@ accumulated time series of frames (days to weeks, once the Pi is
 continuously collecting via `radar-fetch-raw`) to train on rather than
 overfitting to nine frames from one afternoon.
 
+### E-ink display (experimental)
+
+`weather radar-image` renders the current reflectivity grid — cropped to
+`--radius-km` (default 50) around `LATITUDE`/`LONGITUDE` — as a 600x448 PNG
+using the 7-color palette a Waveshare 5.65" ACeP e-Paper panel supports
+(white/blue/green/yellow/orange/red for reflectivity, black reserved for
+arrows). Motion arrows are drawn on a coarse grid over the image: each
+covers a block of the crop, gated on that block's max reflectivity (skips
+essentially-empty blocks) and showing the *mean* optical-flow vector across
+the block rather than a single sampled point — real reflectivity is often
+scattered/speckled, and point-sampling a sparse grid mostly lands on gaps
+between echoes and would draw almost no arrows even with clear real motion
+underneath.
+
+This reuses the same dense-optical-flow estimate `radar-nowcast` computes
+(`radar_nowcast.estimate_motion_field`), just visualized directly as
+*current* movement rather than used to advect the grid forward into a
+forecast.
+
+Needs the `display` poetry group (`poetry install --with display` — Pillow
++ OpenCV, **no Py-ART**). This is the one radar-adjacent piece that's
+genuinely fine to run on the Pi itself: it only ever loads already-decoded
+`.npz` grids (synced over from wherever `--with radar` decoding happened),
+never decodes a raw scan, so it never needs Cartopy. Point whatever pushes
+images to your e-ink panel (e.g. the `waveshare-epd` library, not something
+this project depends on) at the PNG `radar-image` writes.
+
 ## Storm alerts
 
 `weather storm-check` combines two independent signals:
@@ -211,6 +239,9 @@ overfitting to nine frames from one afternoon.
   real grid that eventually decoded closest to the forecast time (MAE +
   critical success index), tracked over time like `evaluate.py` does for
   the tabular model.
+- `radar_image.py` — renders a region around a point as a 7-color PNG for
+  a Waveshare e-ink panel, with motion arrows from the same optical-flow
+  estimate `radar_nowcast.py` uses.
 - `home_precip_check.py` — runs a fresh radar nowcast and checks whether it
   shows rain reaching a specific lat/lon (converted to a grid pixel via a
   flat-earth approximation), used by `weather storm-check`.
