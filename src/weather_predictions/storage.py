@@ -13,6 +13,9 @@ Four tables:
 - `predictions` / `model_performance` — forecasts made by the model and their
   scored accuracy once the real outcome is known, so skill can be tracked
   over time.
+- `radar_nowcasts` / `radar_nowcast_performance` — same predict/evaluate
+  pattern as above, for radar-based nowcasts (see radar_nowcast.py /
+  radar_nowcast_evaluate.py) instead of the tabular rain/temp model.
 """
 
 from __future__ import annotations
@@ -83,6 +86,27 @@ CREATE TABLE IF NOT EXISTS model_performance (
     temp_min_mae REAL,
     PRIMARY KEY (evaluated_at, horizon_days)
 );
+
+CREATE TABLE IF NOT EXISTS radar_nowcasts (
+    predicted_at TEXT NOT NULL,
+    valid_at TEXT NOT NULL,
+    lead_minutes REAL NOT NULL,
+    method TEXT NOT NULL,
+    station TEXT NOT NULL,
+    grid_path TEXT NOT NULL,
+    PRIMARY KEY (predicted_at, valid_at, method)
+);
+
+CREATE TABLE IF NOT EXISTS radar_nowcast_performance (
+    evaluated_at TEXT NOT NULL,
+    method TEXT NOT NULL,
+    lead_minutes REAL NOT NULL,
+    n_samples INTEGER,
+    mae_dbz REAL,
+    csi REAL,
+    csi_threshold_dbz REAL,
+    PRIMARY KEY (evaluated_at, method, lead_minutes)
+);
 """
 
 _OBS_COLUMNS = [
@@ -129,6 +153,25 @@ _PERFORMANCE_COLUMNS = [
     "rain_brier",
     "temp_max_mae",
     "temp_min_mae",
+]
+
+_RADAR_NOWCAST_COLUMNS = [
+    "predicted_at",
+    "valid_at",
+    "lead_minutes",
+    "method",
+    "station",
+    "grid_path",
+]
+
+_RADAR_NOWCAST_PERFORMANCE_COLUMNS = [
+    "evaluated_at",
+    "method",
+    "lead_minutes",
+    "n_samples",
+    "mae_dbz",
+    "csi",
+    "csi_threshold_dbz",
 ]
 
 
@@ -290,4 +333,29 @@ def fetch_all_performance(db_path: Path = DB_PATH) -> list[dict[str, Any]]:
     with connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT * FROM model_performance ORDER BY evaluated_at, horizon_days").fetchall()
+        return [dict(r) for r in rows]
+
+
+def upsert_radar_nowcasts(records: list[dict[str, Any]], db_path: Path = DB_PATH) -> int:
+    """Re-running a nowcast for the same predicted_at/valid_at/method replaces the earlier one."""
+    with connect(db_path) as conn:
+        return _upsert(conn, "radar_nowcasts", _RADAR_NOWCAST_COLUMNS, records, replace=True)
+
+
+def fetch_all_radar_nowcasts(db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+    with connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM radar_nowcasts ORDER BY predicted_at, method").fetchall()
+        return [dict(r) for r in rows]
+
+
+def upsert_radar_nowcast_performance(records: list[dict[str, Any]], db_path: Path = DB_PATH) -> int:
+    with connect(db_path) as conn:
+        return _upsert(conn, "radar_nowcast_performance", _RADAR_NOWCAST_PERFORMANCE_COLUMNS, records, replace=True)
+
+
+def fetch_all_radar_nowcast_performance(db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+    with connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM radar_nowcast_performance ORDER BY evaluated_at, method").fetchall()
         return [dict(r) for r in rows]

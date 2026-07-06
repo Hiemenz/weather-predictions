@@ -37,6 +37,7 @@ optional = true
 
 [tool.poetry.group.radar.dependencies]
 arm-pyart = "^2.2.4"
+opencv-python-headless = "^4.12.0.88"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

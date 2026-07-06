@@ -1,4 +1,4 @@
-"""Command-line entrypoint: `weather fetch|backfill|enrich|radar-fetch-raw|radar-backfill-raw|radar-decode-pending|radar-fetch|radar-backfill|train|predict|evaluate|status`."""
+"""Command-line entrypoint: `weather fetch|backfill|enrich|radar-fetch-raw|radar-backfill-raw|radar-decode-pending|radar-fetch|radar-backfill|radar-nowcast|radar-nowcast-evaluate|train|predict|evaluate|status`."""
 
 from __future__ import annotations
 
@@ -110,6 +110,41 @@ def radar_backfill(
 
     saved_count = backfill_range(datetime.fromisoformat(start), datetime.fromisoformat(end), keep_raw=keep_raw)
     typer.echo(f"Decoded {saved_count} radar scan(s).")
+
+
+@app.command()
+def radar_nowcast(
+    lead_minutes: float = typer.Option(30.0, help="How far ahead to forecast the reflectivity grid."),
+) -> None:
+    """Forecast the reflectivity grid N minutes ahead (optical flow + persistence baseline). Needs `poetry install --with radar`."""
+    from weather_predictions.radar_nowcast import InsufficientFramesError
+    from weather_predictions.radar_nowcast import nowcast as run_radar_nowcast
+
+    try:
+        result = run_radar_nowcast(lead_minutes=lead_minutes)
+    except InsufficientFramesError as e:
+        typer.echo(str(e))
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Nowcast for {result.valid_at} (t+{result.lead_minutes:.0f}min, from {result.predicted_at}):")
+    for method, path in result.grid_paths.items():
+        typer.echo(f"  {method}: {path}")
+
+
+@app.command()
+def radar_nowcast_evaluate() -> None:
+    """Score past radar nowcasts against the real grid that arrived, and log skill over time."""
+    from weather_predictions.radar_nowcast_evaluate import evaluate as run_radar_nowcast_evaluate
+
+    scored, pending = run_radar_nowcast_evaluate()
+    if not scored:
+        typer.echo("No nowcasts old enough to score yet.")
+    for r in scored:
+        typer.echo(
+            f"method={r.method} | lead={r.lead_minutes:.0f}min | n={r.n_samples} | "
+            f"mae={r.mae_dbz:.2f}dBZ csi={r.csi:.2f} (threshold {r.csi_threshold_dbz:.0f}dBZ)"
+        )
+    typer.echo(f"Pending (no actual grid yet): {pending}")
 
 
 @app.command()
