@@ -60,6 +60,7 @@ poetry run weather radar-backfill START END        # e.g. 2026-07-04T00:00:00 20
 poetry run weather radar-nowcast                    # forecast the reflectivity grid 30min ahead
 poetry run weather radar-nowcast-evaluate            # score past radar nowcasts against real outcomes
 poetry run weather radar-image --radius-km 50        # render a 7-color + motion-arrow PNG for an e-ink panel
+poetry run weather storm-check                       # NWS active alerts + experimental radar-based rain check
 ```
 
 ## Deployment: Pi collects, Mac trains
@@ -179,9 +180,26 @@ never decodes a raw scan, so it never needs Cartopy. Point whatever pushes
 images to your e-ink panel (e.g. the `waveshare-epd` library, not something
 this project depends on) at the PNG `radar-image` writes.
 
+## Storm alerts
+
+`weather storm-check` combines two independent signals:
+
+- **NWS active alerts** — official, real-time severe thunderstorm/tornado/
+  flood watches and warnings for your location (`/alerts/active`). This is
+  the authoritative signal; if it says there's a warning, trust it.
+- **Radar nowcast (experimental)** — runs a fresh optical-flow nowcast (see
+  "Nowcasting" above) and checks whether the forecasted reflectivity grid
+  shows rain reaching `LATITUDE`/`LONGITUDE` (config.py) within
+  `--lead-minutes` (default 30). This is a rougher, best-effort supplement
+  built on the same nowcast model, geolocated by converting your lat/lon
+  into a pixel offset from the radar site via a flat-earth approximation —
+  fine at this scale, but not survey-grade. If fewer than 2 radar frames
+  exist yet, this half just says so and the NWS alerts still show.
+
 ## How it works
 
-- `nws_client.py` — wrapper around the NWS API (live observations, forecast).
+- `nws_client.py` — wrapper around the NWS API (live observations, forecast,
+  and active alerts).
 - `cdo_client.py` — wrapper around NOAA CDO/GHCND (bulk historical temp/precip).
 - `lcd_client.py` — downloads NOAA LCD's per-year CSVs (bulk historical
   pressure/humidity/wind); shells out to `curl` for the actual download
@@ -224,6 +242,9 @@ this project depends on) at the PNG `radar-image` writes.
 - `radar_image.py` — renders a region around a point as a 7-color PNG for
   a Waveshare e-ink panel, with motion arrows from the same optical-flow
   estimate `radar_nowcast.py` uses.
+- `home_precip_check.py` — runs a fresh radar nowcast and checks whether it
+  shows rain reaching a specific lat/lon (converted to a grid pixel via a
+  flat-earth approximation), used by `weather storm-check`.
 
 ## Location
 

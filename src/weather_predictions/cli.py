@@ -1,4 +1,4 @@
-"""Command-line entrypoint: `weather fetch|backfill|enrich|radar-fetch-raw|radar-backfill-raw|radar-decode-pending|radar-fetch|radar-backfill|radar-nowcast|radar-nowcast-evaluate|radar-image|train|predict|evaluate|status`."""
+"""Command-line entrypoint: `weather fetch|backfill|enrich|radar-fetch-raw|radar-backfill-raw|radar-decode-pending|radar-fetch|radar-backfill|radar-nowcast|radar-nowcast-evaluate|radar-image|storm-check|train|predict|evaluate|status`."""
 
 from __future__ import annotations
 
@@ -169,6 +169,43 @@ def radar_image(
         raise typer.Exit(code=1)
 
     typer.echo(f"Rendered {result.output_path} from frame {result.frame_timestamp} (+/-{result.region_radius_km:.0f}km).")
+
+
+@app.command()
+def storm_check(
+    lead_minutes: float = typer.Option(30.0, help="How far ahead the radar nowcast half of this check looks."),
+) -> None:
+    """Check for active NWS watches/warnings and (if enough radar frames exist) whether rain is headed your way."""
+    from weather_predictions.config import LATITUDE, LONGITUDE
+    from weather_predictions.home_precip_check import OutOfRadarRangeError, check_home
+    from weather_predictions.nws_client import get_active_alerts
+    from weather_predictions.radar_nowcast import InsufficientFramesError
+
+    alerts = get_active_alerts(LATITUDE, LONGITUDE)
+    if not alerts:
+        typer.echo("NWS: no active watches/warnings for your location.")
+    for a in alerts:
+        typer.echo(f"NWS: {a['event']} ({a['severity']}) until {a['expires']} — {a['headline']}")
+
+    try:
+        result = check_home(lead_minutes=lead_minutes)
+    except InsufficientFramesError as e:
+        typer.echo(f"Radar (experimental): {e}")
+        return
+    except OutOfRadarRangeError as e:
+        typer.echo(f"Radar (experimental): {e}")
+        return
+
+    if result.rain_expected:
+        typer.echo(
+            f"Radar (experimental): rain likely reaching you by {result.valid_at} "
+            f"(t+{result.lead_minutes:.0f}min, {result.reflectivity_dbz:.0f}dBZ forecast)."
+        )
+    else:
+        typer.echo(
+            f"Radar (experimental): no rain expected at your location within {result.lead_minutes:.0f}min "
+            f"({result.reflectivity_dbz:.0f}dBZ forecast)."
+        )
 
 
 @app.command()
