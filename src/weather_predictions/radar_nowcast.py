@@ -1,7 +1,9 @@
 """Short-term precipitation nowcasting from stored reflectivity grids.
 
-Needs the `radar` dependency group (`poetry install --with radar`) — same
-constraint as radar.py, plus OpenCV for optical flow.
+Needs the `display` dependency group (`poetry install --with display`) for
+OpenCV — this only ever loads already-decoded grids (radar_processing.load_grid),
+never decodes a raw scan, so it doesn't need Py-ART/Cartopy at all and can
+run on a Pi given grids synced over from wherever decoding happened.
 
 There's no accumulated time series of frames yet (radar collection just
 started), so a data-hungry model like a ConvLSTM would just be overfitting
@@ -77,18 +79,33 @@ def load_recent_frames(n: int = 2, grid_dir: Path = GRID_DIR) -> list[dict[str, 
     return [load_grid(f) for f in files[-n:]]
 
 
-def _to_image(dbz: np.ndarray) -> np.ndarray:
+def to_image(dbz: np.ndarray) -> np.ndarray:
     """dBZ array (NaN = no echo) -> normalized uint8 image for optical flow."""
     filled = np.nan_to_num(dbz, nan=NO_ECHO_DBZ)
     clipped = np.clip(filled, _DBZ_MIN, _DBZ_MAX)
     return ((clipped - _DBZ_MIN) / (_DBZ_MAX - _DBZ_MIN) * 255).astype(np.uint8)
 
 
-def _dense_flow(prev_img: np.ndarray, curr_img: np.ndarray) -> np.ndarray:
+def dense_flow(prev_img: np.ndarray, curr_img: np.ndarray) -> np.ndarray:
     """Farneback dense optical flow, prev -> curr, in pixels/frame-interval."""
     return cv2.calcOpticalFlowFarneback(
         prev_img, curr_img, None, pyr_scale=0.5, levels=3, winsize=15, iterations=3, poly_n=5, poly_sigma=1.2, flags=0
     )
+
+
+def estimate_motion_field(prev_frame: dict[str, Any], curr_frame: dict[str, Any]) -> tuple[np.ndarray, float]:
+    """Dense optical flow (pixels/frame-interval, prev -> curr) between two
+    frames' reflectivity, plus the interval between them in minutes. Shared
+    by optical_flow_forecast (advects it forward) and radar_image.py (draws
+    it as arrows) — same motion estimate, two different uses."""
+    prev_ts = datetime.fromisoformat(prev_frame["timestamp"])
+    curr_ts = datetime.fromisoformat(curr_frame["timestamp"])
+    interval_minutes = (curr_ts - prev_ts).total_seconds() / 60
+    if interval_minutes <= 0:
+        raise InsufficientFramesError("Frames must be strictly increasing in time to estimate motion.")
+
+    flow = dense_flow(to_image(prev_frame["reflectivity_dbz"]), to_image(curr_frame["reflectivity_dbz"]))
+    return flow, interval_minutes
 
 
 def _advect(dbz: np.ndarray, flow: np.ndarray, scale: float) -> np.ndarray:
@@ -114,13 +131,7 @@ def persistence_forecast(latest_frame: dict[str, Any]) -> np.ndarray:
 
 def optical_flow_forecast(prev_frame: dict[str, Any], curr_frame: dict[str, Any], lead_minutes: float) -> np.ndarray:
     """Estimate motion between the last two frames and advect the latest one forward."""
-    prev_ts = datetime.fromisoformat(prev_frame["timestamp"])
-    curr_ts = datetime.fromisoformat(curr_frame["timestamp"])
-    interval_minutes = (curr_ts - prev_ts).total_seconds() / 60
-    if interval_minutes <= 0:
-        raise InsufficientFramesError("Frames must be strictly increasing in time to estimate motion.")
-
-    flow = _dense_flow(_to_image(prev_frame["reflectivity_dbz"]), _to_image(curr_frame["reflectivity_dbz"]))
+    flow, interval_minutes = estimate_motion_field(prev_frame, curr_frame)
     return _advect(curr_frame["reflectivity_dbz"], flow, scale=lead_minutes / interval_minutes)
 
 
