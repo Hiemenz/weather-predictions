@@ -11,7 +11,14 @@ import numpy as np
 import pytest
 
 from weather_predictions.mrms_client import list_mrms_scans
-from weather_predictions.mrms_processing import MrmsProcessingError, load_mrms_grid, parse_mrms_timestamp, save_mrms_grid
+from weather_predictions.mrms_processing import (
+    MrmsProcessingError,
+    OutOfMrmsRangeError,
+    crop_to_region,
+    load_mrms_grid,
+    parse_mrms_timestamp,
+    save_mrms_grid,
+)
 
 
 def test_parse_mrms_timestamp():
@@ -81,6 +88,52 @@ def test_list_mrms_scans_parses_keys(monkeypatch):
     assert len(keys) == 3
     assert keys[0].endswith("MRMS_MergedReflectivityQCComposite_00.50_20260710-000040.grib2.gz")
     assert all("CONUS/MergedReflectivityQCComposite_00.50/20260710/" in k for k in keys)
+
+
+def test_crop_to_region_basic():
+    rng = np.random.default_rng(0)
+    frame = {
+        "source": "MRMS_CONUS",
+        "timestamp": "2026-07-10T00:00:40+00:00",
+        "lat_min": 20.005,
+        "lat_max": 54.995,
+        "lon_min": -129.995,
+        "lon_max": -60.005,
+        "nlat": 3500,
+        "nlon": 7000,
+        "reflectivity_dbz": rng.uniform(-10, 50, (3500, 7000)).astype(np.float32),
+    }
+    # Nashville: 36.16°N, -86.78°W, radius 300 km
+    crop = crop_to_region(frame, center_lat=36.16, center_lon=-86.78, radius_km=300.0)
+
+    assert crop["source"] == "MRMS_CONUS"
+    assert crop["timestamp"] == frame["timestamp"]
+    # Cropped extent should be roughly ±300 km in each direction
+    lat_span_km = (crop["lat_max"] - crop["lat_min"]) * 110.574
+    assert 500 < lat_span_km < 620
+    # Array shape must match metadata
+    assert crop["reflectivity_dbz"].shape == (crop["nlat"], crop["nlon"])
+    # Cropped region must be well inside CONUS
+    assert crop["lat_min"] > 20.0 and crop["lat_max"] < 55.0
+    assert crop["lon_min"] > -130.0 and crop["lon_max"] < -60.0
+
+
+def test_crop_to_region_raises_when_outside_conus():
+    from weather_predictions.mrms_processing import OutOfMrmsRangeError
+
+    frame = {
+        "source": "MRMS_CONUS",
+        "timestamp": "2026-07-10T00:00:40+00:00",
+        "lat_min": 20.005,
+        "lat_max": 54.995,
+        "lon_min": -129.995,
+        "lon_max": -60.005,
+        "nlat": 3500,
+        "nlon": 7000,
+        "reflectivity_dbz": np.zeros((3500, 7000), dtype=np.float32),
+    }
+    with pytest.raises(OutOfMrmsRangeError):
+        crop_to_region(frame, center_lat=10.0, center_lon=-86.0, radius_km=100.0)
 
 
 def test_mrms_module_never_imports_cfgrib_at_top_level():

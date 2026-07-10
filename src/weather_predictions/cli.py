@@ -1,4 +1,4 @@
-"""Command-line entrypoint: `weather fetch|backfill|enrich|radar-fetch-raw|radar-backfill-raw|radar-decode-pending|radar-fetch|radar-backfill|radar-nowcast|radar-nowcast-evaluate|radar-image|mrms-fetch|mrms-backfill|storm-check|hurricane-backfill|hurricane-train|hurricane-predict|hurricane-evaluate|train|predict|evaluate|status`."""
+"""Command-line entrypoint: `weather fetch|backfill|enrich|radar-fetch-raw|radar-backfill-raw|radar-decode-pending|radar-fetch|radar-backfill|radar-nowcast|radar-nowcast-evaluate|radar-image|mrms-fetch|mrms-backfill|mrms-nowcast|mrms-image|storm-check|hurricane-backfill|hurricane-train|hurricane-predict|hurricane-evaluate|train|predict|evaluate|status`."""
 
 from __future__ import annotations
 
@@ -194,6 +194,60 @@ def mrms_backfill(
 
     saved_count = backfill_range(datetime.fromisoformat(start), datetime.fromisoformat(end), keep_raw=keep_raw)
     typer.echo(f"Decoded {saved_count} MRMS scan(s).")
+
+
+@app.command()
+def mrms_nowcast(
+    lead_minutes: float = typer.Option(30.0, help="Minutes ahead to forecast."),
+    radius_km: float = typer.Option(300.0, help="Region radius (km) around LATITUDE/LONGITUDE."),
+) -> None:
+    """Forecast MRMS national radar N minutes ahead (optical flow + persistence). Needs `poetry install --with display`."""
+    from weather_predictions.mrms_nowcast import MrmsNowcastResult
+    from weather_predictions.mrms_nowcast import nowcast as run_mrms_nowcast
+    from weather_predictions.mrms_processing import OutOfMrmsRangeError
+    from weather_predictions.radar_nowcast import InsufficientFramesError
+
+    try:
+        result = run_mrms_nowcast(lead_minutes=lead_minutes, radius_km=radius_km)
+    except (InsufficientFramesError, OutOfMrmsRangeError) as e:
+        typer.echo(str(e))
+        raise typer.Exit(code=1)
+
+    typer.echo(
+        f"MRMS nowcast for {result.valid_at} (t+{result.lead_minutes:.0f}min, "
+        f"from {result.predicted_at}, ±{result.radius_km:.0f}km):"
+    )
+    for method, path in result.grid_paths.items():
+        typer.echo(f"  {method}: {path}")
+
+
+@app.command()
+def mrms_image(
+    radius_km: float = typer.Option(300.0, help="Region radius (km) around LATITUDE/LONGITUDE to render."),
+    output: str = typer.Option("data/mrms/mrms_radar.png", help="Where to save the rendered PNG."),
+) -> None:
+    """Render the current MRMS national radar region + motion arrows as a PNG.
+
+    Needs `poetry install --with display`. Output includes the lat/lon bounding
+    box of the rendered region so it can be overlaid on a map.
+    """
+    from pathlib import Path
+
+    from weather_predictions.mrms_image import render as run_mrms_render
+    from weather_predictions.mrms_processing import OutOfMrmsRangeError
+    from weather_predictions.radar_nowcast import InsufficientFramesError
+
+    try:
+        result = run_mrms_render(radius_km=radius_km, output_path=Path(output))
+    except (InsufficientFramesError, OutOfMrmsRangeError) as e:
+        typer.echo(str(e))
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Rendered {result.output_path} from frame {result.frame_timestamp}")
+    typer.echo(
+        f"  bbox: lat [{result.lat_min:.3f}, {result.lat_max:.3f}] "
+        f"lon [{result.lon_min:.3f}, {result.lon_max:.3f}]"
+    )
 
 
 @app.command()

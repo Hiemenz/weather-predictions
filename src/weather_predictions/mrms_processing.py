@@ -18,6 +18,7 @@ MRMS uses local NCEP GRIB2 parameter tables, so cfgrib may name the variable
 from __future__ import annotations
 
 import gzip
+import math
 import re
 import tempfile
 from datetime import datetime, timezone
@@ -33,6 +34,10 @@ _MISSING_THRESHOLD = -900.0
 
 
 class MrmsProcessingError(RuntimeError):
+    pass
+
+
+class OutOfMrmsRangeError(RuntimeError):
     pass
 
 
@@ -145,6 +150,63 @@ def save_mrms_grid(frame: dict[str, Any], dest_dir: Path) -> Path:
         nlon=frame["nlon"],
     )
     return dest_path
+
+
+def crop_to_region(
+    frame: dict[str, Any],
+    center_lat: float,
+    center_lon: float,
+    radius_km: float,
+) -> dict[str, Any]:
+    """Crop a national MRMS grid to a rectangular region around a point.
+
+    Returns the same dict shape as `load_mrms_grid` but with a smaller array
+    and updated lat/lon bounds.  Raises OutOfMrmsRangeError if the requested
+    region falls entirely outside the CONUS grid.
+    """
+    lat_min = frame["lat_min"]
+    lat_max = frame["lat_max"]
+    lon_min = frame["lon_min"]
+    lon_max = frame["lon_max"]
+    nlat = frame["nlat"]
+    nlon = frame["nlon"]
+
+    res_lat = (lat_max - lat_min) / (nlat - 1)
+    res_lon = (lon_max - lon_min) / (nlon - 1)
+
+    radius_lat_deg = radius_km / 110.574
+    radius_lon_deg = radius_km / (111.320 * math.cos(math.radians(center_lat)))
+
+    crop_lat_min = max(lat_min, center_lat - radius_lat_deg)
+    crop_lat_max = min(lat_max, center_lat + radius_lat_deg)
+    crop_lon_min = max(lon_min, center_lon - radius_lon_deg)
+    crop_lon_max = min(lon_max, center_lon + radius_lon_deg)
+
+    if crop_lat_min >= crop_lat_max or crop_lon_min >= crop_lon_max:
+        raise OutOfMrmsRangeError(
+            f"({center_lat}, {center_lon}) +/- {radius_km:.0f}km falls entirely "
+            "outside the MRMS CONUS grid."
+        )
+
+    # Row 0 = lat_min (south); col 0 = lon_min (west).
+    row_min = max(0, int((crop_lat_min - lat_min) / res_lat))
+    row_max = min(nlat - 1, int(round((crop_lat_max - lat_min) / res_lat)))
+    col_min = max(0, int((crop_lon_min - lon_min) / res_lon))
+    col_max = min(nlon - 1, int(round((crop_lon_max - lon_min) / res_lon)))
+
+    dbz_crop = frame["reflectivity_dbz"][row_min : row_max + 1, col_min : col_max + 1]
+
+    return {
+        "source": "MRMS_CONUS",
+        "timestamp": frame["timestamp"],
+        "lat_min": lat_min + row_min * res_lat,
+        "lat_max": lat_min + row_max * res_lat,
+        "lon_min": lon_min + col_min * res_lon,
+        "lon_max": lon_min + col_max * res_lon,
+        "nlat": int(dbz_crop.shape[0]),
+        "nlon": int(dbz_crop.shape[1]),
+        "reflectivity_dbz": dbz_crop,
+    }
 
 
 def load_mrms_grid(path: Path) -> dict[str, Any]:
