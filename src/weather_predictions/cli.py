@@ -1,4 +1,4 @@
-"""Command-line entrypoint: `weather fetch|backfill|enrich|radar-fetch-raw|radar-backfill-raw|radar-decode-pending|radar-fetch|radar-backfill|radar-nowcast|radar-nowcast-evaluate|radar-image|storm-check|hurricane-backfill|hurricane-train|hurricane-predict|hurricane-evaluate|train|predict|evaluate|status`."""
+"""Command-line entrypoint: `weather fetch|backfill|enrich|radar-fetch-raw|radar-backfill-raw|radar-decode-pending|radar-fetch|radar-backfill|radar-nowcast|radar-nowcast-evaluate|radar-image|mrms-fetch|mrms-backfill|storm-check|hurricane-backfill|hurricane-train|hurricane-predict|hurricane-evaluate|train|predict|evaluate|status`."""
 
 from __future__ import annotations
 
@@ -169,6 +169,31 @@ def radar_image(
         raise typer.Exit(code=1)
 
     typer.echo(f"Rendered {result.output_path} from frame {result.frame_timestamp} (+/-{result.region_radius_km:.0f}km).")
+
+
+@app.command()
+def mrms_fetch(keep_raw: bool = typer.Option(False, help="Keep the raw .grib2.gz after decoding.")) -> None:
+    """Download + decode the latest MRMS national radar composite. Needs `poetry install --with mrms` and `brew install eccodes`."""
+    from weather_predictions.mrms import fetch_latest
+
+    saved_path = fetch_latest(keep_raw=keep_raw)
+    if saved_path is None:
+        typer.echo("No MRMS scans available yet.")
+        raise typer.Exit(code=1)
+    typer.echo(f"Saved {saved_path}")
+
+
+@app.command()
+def mrms_backfill(
+    start: str = typer.Argument(..., help="Start, ISO 8601 e.g. 2026-07-04T00:00:00."),
+    end: str = typer.Argument(..., help="End, ISO 8601."),
+    keep_raw: bool = typer.Option(False, help="Keep raw .grib2.gz files after decoding."),
+) -> None:
+    """Download + decode every MRMS national scan in a UTC time range (~30/hour, ~1.5MB each). Needs `poetry install --with mrms`."""
+    from weather_predictions.mrms import backfill_range
+
+    saved_count = backfill_range(datetime.fromisoformat(start), datetime.fromisoformat(end), keep_raw=keep_raw)
+    typer.echo(f"Decoded {saved_count} MRMS scan(s).")
 
 
 @app.command()
