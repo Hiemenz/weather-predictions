@@ -13,6 +13,12 @@ Four tables:
 - `predictions` / `model_performance` — forecasts made by the model and their
   scored accuracy once the real outcome is known, so skill can be tracked
   over time.
+- `hurricane_fixes` — HURDAT2 best-track history (see hurricane_client.py),
+  one row per storm per 6-hourly fix.
+- `hurricane_predictions` / `hurricane_performance` — same predict/evaluate
+  pattern as `predictions`/`model_performance`, for the hurricane track/
+  intensity model (see hurricane_train.py/hurricane_predict.py/
+  hurricane_evaluate.py) instead of the tabular rain/temp model.
 - `radar_nowcasts` / `radar_nowcast_performance` — same predict/evaluate
   pattern as above, for radar-based nowcasts (see radar_nowcast.py /
   radar_nowcast_evaluate.py) instead of the tabular rain/temp model.
@@ -87,6 +93,41 @@ CREATE TABLE IF NOT EXISTS model_performance (
     PRIMARY KEY (evaluated_at, horizon_days)
 );
 
+CREATE TABLE IF NOT EXISTS hurricane_fixes (
+    storm_id TEXT NOT NULL,
+    name TEXT,
+    timestamp TEXT NOT NULL,
+    lat REAL,
+    lon REAL,
+    max_wind_kt REAL,
+    min_pressure_mb REAL,
+    status TEXT,
+    PRIMARY KEY (storm_id, timestamp)
+);
+
+CREATE TABLE IF NOT EXISTS hurricane_predictions (
+    predicted_at TEXT NOT NULL,
+    storm_id TEXT NOT NULL,
+    storm_name TEXT,
+    horizon_hours INTEGER NOT NULL,
+    valid_at TEXT NOT NULL,
+    lat_pred REAL,
+    lon_pred REAL,
+    wind_pred_kt REAL,
+    model_trained_at TEXT,
+    PRIMARY KEY (predicted_at, storm_id, horizon_hours)
+);
+
+CREATE TABLE IF NOT EXISTS hurricane_performance (
+    evaluated_at TEXT NOT NULL,
+    model_trained_at TEXT,
+    horizon_hours INTEGER NOT NULL,
+    n_samples INTEGER,
+    track_error_km REAL,
+    wind_mae_kt REAL,
+    PRIMARY KEY (evaluated_at, horizon_hours)
+);
+
 CREATE TABLE IF NOT EXISTS radar_nowcasts (
     predicted_at TEXT NOT NULL,
     valid_at TEXT NOT NULL,
@@ -153,6 +194,38 @@ _PERFORMANCE_COLUMNS = [
     "rain_brier",
     "temp_max_mae",
     "temp_min_mae",
+]
+
+_HURRICANE_FIX_COLUMNS = [
+    "storm_id",
+    "name",
+    "timestamp",
+    "lat",
+    "lon",
+    "max_wind_kt",
+    "min_pressure_mb",
+    "status",
+]
+
+_HURRICANE_PREDICTION_COLUMNS = [
+    "predicted_at",
+    "storm_id",
+    "storm_name",
+    "horizon_hours",
+    "valid_at",
+    "lat_pred",
+    "lon_pred",
+    "wind_pred_kt",
+    "model_trained_at",
+]
+
+_HURRICANE_PERFORMANCE_COLUMNS = [
+    "evaluated_at",
+    "model_trained_at",
+    "horizon_hours",
+    "n_samples",
+    "track_error_km",
+    "wind_mae_kt",
 ]
 
 _RADAR_NOWCAST_COLUMNS = [
@@ -333,6 +406,44 @@ def fetch_all_performance(db_path: Path = DB_PATH) -> list[dict[str, Any]]:
     with connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT * FROM model_performance ORDER BY evaluated_at, horizon_days").fetchall()
+        return [dict(r) for r in rows]
+
+
+def upsert_hurricane_fixes(records: list[dict[str, Any]], db_path: Path = DB_PATH) -> int:
+    with connect(db_path) as conn:
+        return _upsert(conn, "hurricane_fixes", _HURRICANE_FIX_COLUMNS, records, replace=True)
+
+
+def fetch_all_hurricane_fixes(db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+    with connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM hurricane_fixes ORDER BY storm_id, timestamp").fetchall()
+        return [dict(r) for r in rows]
+
+
+def upsert_hurricane_predictions(records: list[dict[str, Any]], db_path: Path = DB_PATH) -> int:
+    with connect(db_path) as conn:
+        return _upsert(conn, "hurricane_predictions", _HURRICANE_PREDICTION_COLUMNS, records, replace=True)
+
+
+def fetch_all_hurricane_predictions(db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+    with connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM hurricane_predictions ORDER BY predicted_at, storm_id, horizon_hours"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def upsert_hurricane_performance(records: list[dict[str, Any]], db_path: Path = DB_PATH) -> int:
+    with connect(db_path) as conn:
+        return _upsert(conn, "hurricane_performance", _HURRICANE_PERFORMANCE_COLUMNS, records, replace=True)
+
+
+def fetch_all_hurricane_performance(db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+    with connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM hurricane_performance ORDER BY evaluated_at, horizon_hours").fetchall()
         return [dict(r) for r in rows]
 
 

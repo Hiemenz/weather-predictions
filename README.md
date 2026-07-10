@@ -61,6 +61,11 @@ poetry run weather radar-nowcast                    # forecast the reflectivity 
 poetry run weather radar-nowcast-evaluate            # score past radar nowcasts against real outcomes
 poetry run weather radar-image --radius-km 50        # render a 7-color + motion-arrow PNG for an e-ink panel
 poetry run weather storm-check                       # NWS active alerts + experimental radar-based rain check
+
+poetry run weather hurricane-backfill              # download NHC's HURDAT2 best-track history (run once)
+poetry run weather hurricane-train                 # train the 12/24/48/72h track + intensity model
+poetry run weather hurricane-predict                # forecast any currently active tropical cyclones
+poetry run weather hurricane-evaluate                # score past hurricane forecasts against outcomes
 ```
 
 ## Deployment: Pi collects, Mac trains
@@ -196,6 +201,51 @@ this project depends on) at the PNG `radar-image` writes.
   fine at this scale, but not survey-grade. If fewer than 2 radar frames
   exist yet, this half just says so and the NWS alerts still show.
 
+## Hurricanes
+
+`weather hurricane-backfill` downloads NOAA/NHC's Atlantic best-track
+database (HURDAT2 — comma-delimited, 6-hourly position/wind/pressure fixes
+for every known tropical/subtropical cyclone back to 1851, ~55,000 fixes as
+of the 2025 season) and stores every fix. `weather hurricane-train` fits a
+statistical track/intensity model on that history — current position,
+motion vector (bearing/speed from the two most recent fixes), intensity,
+and day-of-year climatology predicting position and max wind at t+12/24/
+48/72h. This is the same *class* of model NHC's own historical baselines
+(CLIPER/SHIFOR) use — current-generation operational hurricane models are
+dynamical/ensemble systems running on supercomputers against global
+reanalysis data, which this project has no path to; a statistical model
+trained on real best-track history is the honest, buildable equivalent.
+
+The model is compared against a **straight-line motion baseline**
+(assume the storm keeps moving at its current bearing/speed) — same "does
+it beat naive" framing as the tabular model. Actual results training on
+all 1851-2025 HURDAT2 fixes, testing on the most recent 5 storm seasons:
+
+| Horizon | Track error (baseline) | Wind MAE (baseline) |
+|---|---|---|
+| t+12h | 169km (**89km — baseline wins**) | 6.3kt (6.8kt) |
+| t+24h | 280km (**234km — baseline wins**) | 9.8kt (11.9kt) |
+| t+48h | 527km (589km) | 14.4kt (19.3kt) |
+| t+72h | 770km (991km) | 16.7kt (23.9kt) |
+
+Honest result, not cherry-picked: at 12-24h the straight-line baseline
+actually wins on track — short-range hurricane motion is highly
+autocorrelated, so a smoothed model prediction can lose to pure kinematic
+extrapolation at short lead times (a known effect in real hurricane
+forecasting, not a bug here). The model clearly wins at 48-72h, where a
+storm's motion has had time to depart from a straight line, and wins on
+wind intensity at every horizon.
+
+`weather hurricane-predict` forecasts any storm NHC currently lists as
+active, using their live feed (`CurrentStorms.json`, updated every ~2
+minutes) for the "as of now" snapshot — that feed already reports current
+movement direction/speed directly, so a live forecast doesn't need fix
+history the way backtesting does. `weather hurricane-evaluate` scores past
+forecasts against subsequent HURDAT2 fixes — since HURDAT2 only refreshes
+roughly once a year (after the season ends), most forecasts will show as
+pending for a long time before they're scorable, same as the radar
+nowcast's predict/evaluate loop.
+
 ## How it works
 
 - `nws_client.py` — wrapper around the NWS API (live observations, forecast,
@@ -245,6 +295,20 @@ this project depends on) at the PNG `radar-image` writes.
 - `home_precip_check.py` — runs a fresh radar nowcast and checks whether it
   shows rain reaching a specific lat/lon (converted to a grid pixel via a
   flat-earth approximation), used by `weather storm-check`.
+- `geo.py` — great-circle distance/bearing/projection helpers (haversine,
+  shared by hurricane feature engineering, training, and evaluation).
+- `hurricane_client.py` — downloads/parses NOAA/NHC's HURDAT2 best-track
+  history and the live active-storms feed.
+- `hurricane_features.py` — motion vector/age/climatology features per fix,
+  with horizon targets matched by nearest-timestamp-within-tolerance (not a
+  naive shift, since HURDAT2 isn't perfectly 6-hourly).
+- `hurricane_train.py` — trains the track (multi-output lat/lon) and wind
+  RandomForest regressors per horizon, split by storm season (most recent
+  N years held out) rather than a random row split.
+- `hurricane_predict.py` — forecasts any currently active storm from NHC's
+  live feed using the trained model.
+- `hurricane_evaluate.py` — scores stored hurricane forecasts against
+  subsequent HURDAT2 fixes once available.
 
 ## Location
 

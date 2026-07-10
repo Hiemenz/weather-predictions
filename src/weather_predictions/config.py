@@ -31,6 +31,17 @@ RADAR_STATION_ID = "KOHX"
 # deprecated `noaa-nexrad-level2` bucket in September 2025.
 RADAR_S3_BUCKET = "unidata-nexrad-level2"
 
+# NHC's Atlantic best-track history (comma-delimited, 6-hourly fixes back to
+# 1851). The filename embeds the file's own last-update date and changes
+# roughly once a year after hurricane season ends (verified current as of
+# this writing — https://www.nhc.noaa.gov/data/ lists the current filename
+# if this 404s).
+NHC_HURDAT2_URL = "https://www.nhc.noaa.gov/data/hurdat/hurdat2-1851-2025-02272026.txt"
+
+# Live feed of active tropical cyclones, updated every ~2 minutes. Static
+# URL, `{"activeStorms": []}` when nothing is active.
+NHC_CURRENT_STORMS_URL = "https://www.nhc.noaa.gov/CurrentStorms.json"
+
 USER_AGENT = "weather-predictions (mckevinaaa24@gmail.com)"
 API_BASE = "https://api.weather.gov"
 
@@ -44,6 +55,7 @@ RADAR_DATA_DIR = DATA_DIR / "radar"
 
 DB_PATH = DATA_DIR / "observations.sqlite"
 MODEL_PATH = MODELS_DIR / "precip_model.joblib"
+HURRICANE_MODEL_PATH = MODELS_DIR / "hurricane_model.joblib"
 
 # Minimum days of daily history required before training is allowed.
 MIN_TRAINING_DAYS = 14
