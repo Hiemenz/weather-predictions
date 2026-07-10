@@ -1,4 +1,4 @@
-"""Command-line entrypoint: `weather fetch|backfill|enrich|radar-fetch-raw|radar-backfill-raw|radar-decode-pending|radar-fetch|radar-backfill|hurricane-backfill|hurricane-train|hurricane-predict|hurricane-evaluate|train|predict|evaluate|status`."""
+"""Command-line entrypoint: `weather fetch|backfill|enrich|radar-fetch-raw|radar-backfill-raw|radar-decode-pending|radar-fetch|radar-backfill|radar-nowcast|radar-nowcast-evaluate|radar-image|storm-check|hurricane-backfill|hurricane-train|hurricane-predict|hurricane-evaluate|train|predict|evaluate|status`."""
 
 from __future__ import annotations
 
@@ -110,6 +110,102 @@ def radar_backfill(
 
     saved_count = backfill_range(datetime.fromisoformat(start), datetime.fromisoformat(end), keep_raw=keep_raw)
     typer.echo(f"Decoded {saved_count} radar scan(s).")
+
+
+@app.command()
+def radar_nowcast(
+    lead_minutes: float = typer.Option(30.0, help="How far ahead to forecast the reflectivity grid."),
+) -> None:
+    """Forecast the reflectivity grid N minutes ahead (optical flow + persistence baseline). Needs `poetry install --with radar`."""
+    from weather_predictions.radar_nowcast import InsufficientFramesError
+    from weather_predictions.radar_nowcast import nowcast as run_radar_nowcast
+
+    try:
+        result = run_radar_nowcast(lead_minutes=lead_minutes)
+    except InsufficientFramesError as e:
+        typer.echo(str(e))
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Nowcast for {result.valid_at} (t+{result.lead_minutes:.0f}min, from {result.predicted_at}):")
+    for method, path in result.grid_paths.items():
+        typer.echo(f"  {method}: {path}")
+
+
+@app.command()
+def radar_nowcast_evaluate() -> None:
+    """Score past radar nowcasts against the real grid that arrived, and log skill over time."""
+    from weather_predictions.radar_nowcast_evaluate import evaluate as run_radar_nowcast_evaluate
+
+    scored, pending = run_radar_nowcast_evaluate()
+    if not scored:
+        typer.echo("No nowcasts old enough to score yet.")
+    for r in scored:
+        typer.echo(
+            f"method={r.method} | lead={r.lead_minutes:.0f}min | n={r.n_samples} | "
+            f"mae={r.mae_dbz:.2f}dBZ csi={r.csi:.2f} (threshold {r.csi_threshold_dbz:.0f}dBZ)"
+        )
+    typer.echo(f"Pending (no actual grid yet): {pending}")
+
+
+@app.command()
+def radar_image(
+    radius_km: float = typer.Option(50.0, help="Region radius (km) around LATITUDE/LONGITUDE to render."),
+    output: str = typer.Option("data/radar/radar.png", help="Where to save the rendered PNG."),
+) -> None:
+    """Render the current reflectivity grid + motion arrows as a 7-color PNG for a Waveshare ACeP e-ink panel.
+
+    Needs `poetry install --with display` (Pillow + OpenCV, no Py-ART) —
+    works on the Pi given grids synced over from wherever decoding happened.
+    """
+    from pathlib import Path
+
+    from weather_predictions.radar_image import OutOfRadarRangeError, render as run_render
+    from weather_predictions.radar_nowcast import InsufficientFramesError
+
+    try:
+        result = run_render(radius_km=radius_km, output_path=Path(output))
+    except (InsufficientFramesError, OutOfRadarRangeError) as e:
+        typer.echo(str(e))
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Rendered {result.output_path} from frame {result.frame_timestamp} (+/-{result.region_radius_km:.0f}km).")
+
+
+@app.command()
+def storm_check(
+    lead_minutes: float = typer.Option(30.0, help="How far ahead the radar nowcast half of this check looks."),
+) -> None:
+    """Check for active NWS watches/warnings and (if enough radar frames exist) whether rain is headed your way."""
+    from weather_predictions.config import LATITUDE, LONGITUDE
+    from weather_predictions.home_precip_check import OutOfRadarRangeError, check_home
+    from weather_predictions.nws_client import get_active_alerts
+    from weather_predictions.radar_nowcast import InsufficientFramesError
+
+    alerts = get_active_alerts(LATITUDE, LONGITUDE)
+    if not alerts:
+        typer.echo("NWS: no active watches/warnings for your location.")
+    for a in alerts:
+        typer.echo(f"NWS: {a['event']} ({a['severity']}) until {a['expires']} — {a['headline']}")
+
+    try:
+        result = check_home(lead_minutes=lead_minutes)
+    except InsufficientFramesError as e:
+        typer.echo(f"Radar (experimental): {e}")
+        return
+    except OutOfRadarRangeError as e:
+        typer.echo(f"Radar (experimental): {e}")
+        return
+
+    if result.rain_expected:
+        typer.echo(
+            f"Radar (experimental): rain likely reaching you by {result.valid_at} "
+            f"(t+{result.lead_minutes:.0f}min, {result.reflectivity_dbz:.0f}dBZ forecast)."
+        )
+    else:
+        typer.echo(
+            f"Radar (experimental): no rain expected at your location within {result.lead_minutes:.0f}min "
+            f"({result.reflectivity_dbz:.0f}dBZ forecast)."
+        )
 
 
 @app.command()

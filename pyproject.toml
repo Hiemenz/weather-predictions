@@ -38,6 +38,19 @@ optional = true
 [tool.poetry.group.radar.dependencies]
 arm-pyart = "^2.2.4"
 
+# Nowcasting (optical flow) and e-ink image rendering — neither touches
+# Py-ART/Cartopy, so this installs fine on a Pi (opencv-python-headless has
+# prebuilt ARM wheels) even without the `radar` group above. Separate from
+# `radar` specifically so a Pi can render/display already-decoded grids
+# (synced over from wherever `--with radar` ran) without ever needing
+# Cartopy.
+[tool.poetry.group.display]
+optional = true
+
+[tool.poetry.group.display.dependencies]
+opencv-python-headless = "^4.12.0.88"
+pillow = "^11.3.0"
+
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"

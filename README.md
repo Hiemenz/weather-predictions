@@ -57,6 +57,10 @@ poetry run weather evaluate                        # score past predictions agai
 
 poetry run weather radar-fetch                     # download + decode the latest radar scan
 poetry run weather radar-backfill START END        # e.g. 2026-07-04T00:00:00 2026-07-04T06:00:00
+poetry run weather radar-nowcast                    # forecast the reflectivity grid 30min ahead
+poetry run weather radar-nowcast-evaluate            # score past radar nowcasts against real outcomes
+poetry run weather radar-image --radius-km 50        # render a 7-color + motion-arrow PNG for an e-ink panel
+poetry run weather storm-check                       # NWS active alerts + experimental radar-based rain check
 
 poetry run weather hurricane-backfill              # download NHC's HURDAT2 best-track history (run once)
 poetry run weather hurricane-train                 # train the 12/24/48/72h track + intensity model
@@ -125,13 +129,77 @@ CDO/LCD/NWS split above:
   for convenience when running directly on a machine that has the `radar`
   group installed (i.e. not the Pi).
 
-This is **data collection only** — there's no radar-based prediction model
-yet. That would be a genuinely different model from the tabular one above:
-a sequence of these reflectivity grids over time, fed into something like
-optical-flow extrapolation or a ConvLSTM, to predict where precipitation
-moves next (nowcasting). Building that requires first accumulating a real
-time series of frames, the same way the tabular model needed accumulated
-daily history before it could train.
+### Nowcasting (experimental)
+
+`weather radar-nowcast` forecasts the reflectivity grid some number of
+minutes ahead (`--lead-minutes`, default 30) using two methods, same
+"does it beat naive" framing as the tabular model:
+
+- **persistence** — the naive baseline: assume nothing moves.
+- **optical_flow** — estimates a motion field between the two most recent
+  frames with dense optical flow (OpenCV's Farneback method) and advects
+  the latest frame forward along it.
+
+Only a handful of frames exist so far (radar collection just started), so
+this deliberately doesn't attempt a data-hungry model like a ConvLSTM yet —
+optical flow needs only two consecutive frames, not weeks of accumulated
+history, to produce a real (if rough) forecast. Both forecasts are saved
+to `data/radar/nowcasts/` and logged to the `radar_nowcasts` table.
+`weather radar-nowcast-evaluate` later scores them (mean absolute error in
+dBZ, plus critical success index at a 20dBZ "is it raining" threshold)
+against whatever real grid decodes closest to the forecast's target time,
+storing the result in `radar_nowcast_performance` — once enough scored
+history accumulates, it'll show whether optical flow is actually beating
+persistence, the same way `weather evaluate` tracks the tabular model
+against its baseline.
+
+A true ConvLSTM/deep sequence model is future work — it needs a real
+accumulated time series of frames (days to weeks, once the Pi is
+continuously collecting via `radar-fetch-raw`) to train on rather than
+overfitting to nine frames from one afternoon.
+
+### E-ink display (experimental)
+
+`weather radar-image` renders the current reflectivity grid — cropped to
+`--radius-km` (default 50) around `LATITUDE`/`LONGITUDE` — as a 600x448 PNG
+using the 7-color palette a Waveshare 5.65" ACeP e-Paper panel supports
+(white/blue/green/yellow/orange/red for reflectivity, black reserved for
+arrows). Motion arrows are drawn on a coarse grid over the image: each
+covers a block of the crop, gated on that block's max reflectivity (skips
+essentially-empty blocks) and showing the *mean* optical-flow vector across
+the block rather than a single sampled point — real reflectivity is often
+scattered/speckled, and point-sampling a sparse grid mostly lands on gaps
+between echoes and would draw almost no arrows even with clear real motion
+underneath.
+
+This reuses the same dense-optical-flow estimate `radar-nowcast` computes
+(`radar_nowcast.estimate_motion_field`), just visualized directly as
+*current* movement rather than used to advect the grid forward into a
+forecast.
+
+Needs the `display` poetry group (`poetry install --with display` — Pillow
++ OpenCV, **no Py-ART**). This is the one radar-adjacent piece that's
+genuinely fine to run on the Pi itself: it only ever loads already-decoded
+`.npz` grids (synced over from wherever `--with radar` decoding happened),
+never decodes a raw scan, so it never needs Cartopy. Point whatever pushes
+images to your e-ink panel (e.g. the `waveshare-epd` library, not something
+this project depends on) at the PNG `radar-image` writes.
+
+## Storm alerts
+
+`weather storm-check` combines two independent signals:
+
+- **NWS active alerts** — official, real-time severe thunderstorm/tornado/
+  flood watches and warnings for your location (`/alerts/active`). This is
+  the authoritative signal; if it says there's a warning, trust it.
+- **Radar nowcast (experimental)** — runs a fresh optical-flow nowcast (see
+  "Nowcasting" above) and checks whether the forecasted reflectivity grid
+  shows rain reaching `LATITUDE`/`LONGITUDE` (config.py) within
+  `--lead-minutes` (default 30). This is a rougher, best-effort supplement
+  built on the same nowcast model, geolocated by converting your lat/lon
+  into a pixel offset from the radar site via a flat-earth approximation —
+  fine at this scale, but not survey-grade. If fewer than 2 radar frames
+  exist yet, this half just says so and the NWS alerts still show.
 
 ## Hurricanes
 
@@ -180,7 +248,8 @@ nowcast's predict/evaluate loop.
 
 ## How it works
 
-- `nws_client.py` — wrapper around the NWS API (live observations, forecast).
+- `nws_client.py` — wrapper around the NWS API (live observations, forecast,
+  and active alerts).
 - `cdo_client.py` — wrapper around NOAA CDO/GHCND (bulk historical temp/precip).
 - `lcd_client.py` — downloads NOAA LCD's per-year CSVs (bulk historical
   pressure/humidity/wind); shells out to `curl` for the actual download
@@ -213,6 +282,19 @@ nowcast's predict/evaluate loop.
   format frames are stored in.
 - `radar.py` — orchestrates fetch/backfill: download → decode → save →
   delete the raw file, with progress logging per scan.
+- `radar_nowcast.py` — forecasts the reflectivity grid N minutes ahead via
+  optical-flow extrapolation (OpenCV) plus a persistence baseline, storing
+  both for later scoring.
+- `radar_nowcast_evaluate.py` — scores stored radar nowcasts against the
+  real grid that eventually decoded closest to the forecast time (MAE +
+  critical success index), tracked over time like `evaluate.py` does for
+  the tabular model.
+- `radar_image.py` — renders a region around a point as a 7-color PNG for
+  a Waveshare e-ink panel, with motion arrows from the same optical-flow
+  estimate `radar_nowcast.py` uses.
+- `home_precip_check.py` — runs a fresh radar nowcast and checks whether it
+  shows rain reaching a specific lat/lon (converted to a grid pixel via a
+  flat-earth approximation), used by `weather storm-check`.
 - `geo.py` — great-circle distance/bearing/projection helpers (haversine,
   shared by hurricane feature engineering, training, and evaluation).
 - `hurricane_client.py` — downloads/parses NOAA/NHC's HURDAT2 best-track
