@@ -38,6 +38,35 @@ optional = true
 [tool.poetry.group.radar.dependencies]
 arm-pyart = "^2.2.4"
 
+# Web dashboard — FastAPI + Jinja2 served from the Pi.
+[tool.poetry.group.web]
+optional = true
+
+[tool.poetry.group.web.dependencies]
+fastapi = ">=0.111.0"
+uvicorn = {extras = ["standard"], version = ">=0.30.0"}
+jinja2 = ">=3.1.0"
+
+# ConvLSTM learned nowcasting — PyTorch with MPS support for Apple Silicon.
+# CPU-only inference works on the Pi without this group installed.
+[tool.poetry.group.convlstm]
+optional = true
+
+[tool.poetry.group.convlstm.dependencies]
+torch = ">=2.3.0"
+
+# MRMS national radar composite decoding — cfgrib wraps the eccodes C library
+# for GRIB2 parsing. eccodes must be installed separately as a system package:
+#   macOS:  brew install eccodes
+#   Debian: apt install libeccodes-dev
+# This group is Mac-only in practice (the Pi only displays grids that are
+# fetched elsewhere); cfgrib has prebuilt wheels for both amd64 and ARM.
+[tool.poetry.group.mrms]
+optional = true
+
+[tool.poetry.group.mrms.dependencies]
+cfgrib = "^0.9.15"
+
 # Nowcasting (optical flow) and e-ink image rendering — neither touches
 # Py-ART/Cartopy, so this installs fine on a Pi (opencv-python-headless has
 # prebuilt ARM wheels) even without the `radar` group above. Separate from

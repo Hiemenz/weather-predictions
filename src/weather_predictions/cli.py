@@ -1,4 +1,4 @@
-"""Command-line entrypoint: `weather fetch|backfill|enrich|radar-fetch-raw|radar-backfill-raw|radar-decode-pending|radar-fetch|radar-backfill|radar-nowcast|radar-nowcast-evaluate|radar-image|storm-check|hurricane-backfill|hurricane-train|hurricane-predict|hurricane-evaluate|train|predict|evaluate|status`."""
+"""Command-line entrypoint: `weather fetch|backfill|enrich|radar-fetch-raw|radar-backfill-raw|radar-decode-pending|radar-fetch|radar-backfill|radar-nowcast|radar-nowcast-evaluate|radar-image|mrms-fetch|mrms-backfill|mrms-nowcast|mrms-image|storm-check|hurricane-backfill|hurricane-train|hurricane-predict|hurricane-evaluate|train|predict|evaluate|status`."""
 
 from __future__ import annotations
 
@@ -172,6 +172,218 @@ def radar_image(
 
 
 @app.command()
+def mrms_fetch(keep_raw: bool = typer.Option(False, help="Keep the raw .grib2.gz after decoding.")) -> None:
+    """Download + decode the latest MRMS national radar composite. Needs `poetry install --with mrms` and `brew install eccodes`."""
+    from weather_predictions.mrms import fetch_latest
+
+    saved_path = fetch_latest(keep_raw=keep_raw)
+    if saved_path is None:
+        typer.echo("No MRMS scans available yet.")
+        raise typer.Exit(code=1)
+    typer.echo(f"Saved {saved_path}")
+
+
+@app.command()
+def mrms_backfill(
+    start: str = typer.Argument(..., help="Start, ISO 8601 e.g. 2026-07-04T00:00:00."),
+    end: str = typer.Argument(..., help="End, ISO 8601."),
+    keep_raw: bool = typer.Option(False, help="Keep raw .grib2.gz files after decoding."),
+) -> None:
+    """Download + decode every MRMS national scan in a UTC time range (~30/hour, ~1.5MB each). Needs `poetry install --with mrms`."""
+    from weather_predictions.mrms import backfill_range
+
+    saved_count = backfill_range(datetime.fromisoformat(start), datetime.fromisoformat(end), keep_raw=keep_raw)
+    typer.echo(f"Decoded {saved_count} MRMS scan(s).")
+
+
+@app.command()
+def dashboard(
+    host: str = typer.Option("0.0.0.0", help="Host to bind."),
+    port: int = typer.Option(8080, help="Port to listen on."),
+) -> None:
+    """Start the web dashboard (radar, alerts, predictions, evaluation). Needs `poetry install --with web display`."""
+    try:
+        import uvicorn
+        from weather_predictions.dashboard import app as dash_app
+    except ImportError:
+        typer.echo("FastAPI/uvicorn not installed. Run: poetry install --with web")
+        raise typer.Exit(code=1)
+    typer.echo(f"Dashboard at http://{host}:{port}  (Ctrl-C to stop)")
+    uvicorn.run(dash_app, host=host, port=port)
+
+
+@app.command()
+def convlstm_train(
+    epochs: int = typer.Option(20, help="Training epochs."),
+    radius_km: float = typer.Option(300.0, help="Region radius (km) used to crop MRMS frames."),
+) -> None:
+    """Train the ConvLSTM nowcaster on stored MRMS frames. Needs `poetry install --with convlstm` and 2+ weeks of frames."""
+    from weather_predictions.config import LATITUDE, LONGITUDE
+    from weather_predictions.mrms_convlstm import NotEnoughFramesError
+    from weather_predictions.mrms_convlstm import train as run_convlstm_train
+
+    try:
+        result = run_convlstm_train(lat=LATITUDE, lon=LONGITUDE, radius_km=radius_km, epochs=epochs)
+    except (NotEnoughFramesError, ImportError) as e:
+        typer.echo(str(e))
+        raise typer.Exit(code=1)
+
+    typer.echo(
+        f"Trained on {result.n_samples} samples over {result.n_epochs} epochs. "
+        f"Final loss: {result.final_loss:.5f}. Model saved to {result.model_path}"
+    )
+
+
+@app.command()
+def qpe_fetch() -> None:
+    """Store the latest MRMS hourly rainfall accumulation (gauge-corrected) at your location. Needs `poetry install --with mrms`."""
+    from weather_predictions.mrms_qpe import fetch_latest as run_qpe_fetch
+
+    precip_mm = run_qpe_fetch()
+    if precip_mm is None:
+        typer.echo("No QPE value available (no data at your location or no files yet).")
+    else:
+        typer.echo(f"Last hour's rainfall at your location: {precip_mm:.2f} mm")
+
+
+@app.command()
+def qpe_backfill(
+    start: str = typer.Argument(..., help="Start, ISO 8601 e.g. 2026-07-04T00:00:00."),
+    end: str = typer.Argument(..., help="End, ISO 8601."),
+) -> None:
+    """Store MRMS hourly rainfall at your location for a UTC time range (24 files/day). Needs `poetry install --with mrms`."""
+    from weather_predictions.mrms_qpe import backfill_range as run_qpe_backfill
+
+    stored = run_qpe_backfill(datetime.fromisoformat(start), datetime.fromisoformat(end))
+    typer.echo(f"Stored {stored} hour(s) of QPE data.")
+
+
+@app.command()
+def mrms_nowcast(
+    lead_minutes: float = typer.Option(30.0, help="Minutes ahead to forecast."),
+    radius_km: float = typer.Option(300.0, help="Region radius (km) around LATITUDE/LONGITUDE."),
+) -> None:
+    """Forecast MRMS national radar N minutes ahead (optical flow + persistence). Needs `poetry install --with display`."""
+    from weather_predictions.mrms_nowcast import MrmsNowcastResult
+    from weather_predictions.mrms_nowcast import nowcast as run_mrms_nowcast
+    from weather_predictions.mrms_processing import OutOfMrmsRangeError
+    from weather_predictions.radar_nowcast import InsufficientFramesError
+
+    try:
+        result = run_mrms_nowcast(lead_minutes=lead_minutes, radius_km=radius_km)
+    except (InsufficientFramesError, OutOfMrmsRangeError) as e:
+        typer.echo(str(e))
+        raise typer.Exit(code=1)
+
+    typer.echo(
+        f"MRMS nowcast for {result.valid_at} (t+{result.lead_minutes:.0f}min, "
+        f"from {result.predicted_at}, ±{result.radius_km:.0f}km):"
+    )
+    for method, path in result.grid_paths.items():
+        typer.echo(f"  {method}: {path}")
+
+
+@app.command()
+def mrms_nowcast_evaluate() -> None:
+    """Score past MRMS nowcasts against the real national frame that arrived."""
+    from weather_predictions.mrms_nowcast_evaluate import evaluate as run_mrms_nowcast_evaluate
+
+    scored, pending = run_mrms_nowcast_evaluate()
+    if not scored:
+        typer.echo("No MRMS nowcasts old enough to score yet.")
+    for r in scored:
+        typer.echo(
+            f"method={r.method} | lead={r.lead_minutes:.0f}min | n={r.n_samples} | "
+            f"mae={r.mae_dbz:.2f}dBZ csi={r.csi:.2f} (threshold {r.csi_threshold_dbz:.0f}dBZ)"
+        )
+    typer.echo(f"Pending (no actual frame yet): {pending}")
+
+
+@app.command()
+def mrms_image(
+    radius_km: float = typer.Option(300.0, help="Region radius (km) around LATITUDE/LONGITUDE to render."),
+    output: str = typer.Option("data/mrms/mrms_radar.png", help="Where to save the rendered PNG."),
+) -> None:
+    """Render the current MRMS national radar region + motion arrows as a PNG.
+
+    Needs `poetry install --with display`. Output includes the lat/lon bounding
+    box of the rendered region so it can be overlaid on a map.
+    """
+    from pathlib import Path
+
+    from weather_predictions.mrms_image import render as run_mrms_render
+    from weather_predictions.mrms_processing import OutOfMrmsRangeError
+    from weather_predictions.radar_nowcast import InsufficientFramesError
+
+    try:
+        result = run_mrms_render(radius_km=radius_km, output_path=Path(output))
+    except (InsufficientFramesError, OutOfMrmsRangeError) as e:
+        typer.echo(str(e))
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Rendered {result.output_path} from frame {result.frame_timestamp}")
+    typer.echo(
+        f"  bbox: lat [{result.lat_min:.3f}, {result.lat_max:.3f}] "
+        f"lon [{result.lon_min:.3f}, {result.lon_max:.3f}]"
+    )
+
+
+@app.command()
+def mrms_cells(
+    radius_km: float = typer.Option(300.0, help="Search radius (km) around LATITUDE/LONGITUDE."),
+    max_cells: int = typer.Option(10, help="Show at most this many cells, nearest first."),
+) -> None:
+    """List discrete storm cells near you with distance, movement, and intensity. Needs `poetry install --with display`."""
+    from weather_predictions.mrms_cells import detect_cells
+    from weather_predictions.mrms_processing import OutOfMrmsRangeError
+    from weather_predictions.radar_nowcast import InsufficientFramesError
+
+    try:
+        cells = detect_cells(radius_km=radius_km)
+    except (InsufficientFramesError, OutOfMrmsRangeError) as e:
+        typer.echo(str(e))
+        raise typer.Exit(code=1)
+
+    if not cells:
+        typer.echo(f"No storm cells within {radius_km:.0f}km.")
+        return
+    for c in cells[:max_cells]:
+        toward = "approaching" if c.approaching else "moving away"
+        typer.echo(
+            f"{c.distance_km:.0f}km {c.bearing} | heading {c.heading} at {c.speed_kmh:.0f}km/h ({toward}) | "
+            f"peak {c.peak_dbz:.0f}dBZ | {c.area_km2:.0f}km²"
+        )
+
+
+@app.command()
+def eink_update(
+    radius_km: float = typer.Option(300.0, help="Region radius (km) to render."),
+    output: str = typer.Option(None, help="Override output path for the PNG."),
+) -> None:
+    """Render the latest MRMS radar frame and push it to the Waveshare ACeP e-ink panel.
+
+    Falls back to the NEXRAD station grid if no MRMS frames exist.
+    Requires `poetry install --with display`. On the Pi, also needs the
+    waveshare-epaper driver (pip install waveshare-epaper).
+    """
+    from pathlib import Path
+
+    from weather_predictions.eink_display import update_display
+
+    kwargs: dict = {"radius_km": radius_km}
+    if output:
+        kwargs["output_path"] = Path(output)
+    result = update_display(**kwargs)
+    if not result["success"]:
+        typer.echo(f"e-ink update failed: {result.get('reason', 'unknown')}")
+        raise typer.Exit(code=1)
+    typer.echo(
+        f"{'Pushed to panel' if result['pushed_to_panel'] else 'Image saved (no panel driver)'}: "
+        f"{result['image_path']} (source={result['source']}, frame={result['frame_timestamp']})"
+    )
+
+
+@app.command()
 def storm_check(
     lead_minutes: float = typer.Option(30.0, help="How far ahead the radar nowcast half of this check looks."),
 ) -> None:
@@ -181,11 +393,42 @@ def storm_check(
     from weather_predictions.nws_client import get_active_alerts
     from weather_predictions.radar_nowcast import InsufficientFramesError
 
+    from weather_predictions.notify import PRIORITY_HIGH, PRIORITY_URGENT, send_notification
+
     alerts = get_active_alerts(LATITUDE, LONGITUDE)
     if not alerts:
         typer.echo("NWS: no active watches/warnings for your location.")
     for a in alerts:
         typer.echo(f"NWS: {a['event']} ({a['severity']}) until {a['expires']} — {a['headline']}")
+        priority = PRIORITY_URGENT if a["severity"] in ("Severe", "Extreme") else PRIORITY_HIGH
+        send_notification(a["headline"] or a["event"], title=f"NWS: {a['event']}", priority=priority)
+
+    # Prefer MRMS (national coverage + arrival-time ladder); fall back to the
+    # single-NEXRAD-station check when no MRMS frames have been collected.
+    from weather_predictions.mrms_home_check import estimate_arrival
+    from weather_predictions.mrms_processing import OutOfMrmsRangeError
+
+    try:
+        arrival = estimate_arrival()
+    except (InsufficientFramesError, OutOfMrmsRangeError):
+        arrival = None
+
+    if arrival is not None:
+        if arrival.rain_now:
+            typer.echo("MRMS: it's raining at your location right now.")
+        elif arrival.arrival_lead_minutes is not None:
+            typer.echo(
+                f"MRMS: rain arriving in ~{arrival.arrival_lead_minutes:.0f} min "
+                f"(around {arrival.arrival_at}, "
+                f"{arrival.reflectivity_by_lead[arrival.arrival_lead_minutes]:.0f}dBZ forecast)."
+            )
+            send_notification(
+                f"Rain arriving in ~{arrival.arrival_lead_minutes:.0f} min", title="Rain inbound"
+            )
+        else:
+            max_lead = max(arrival.reflectivity_by_lead)
+            typer.echo(f"MRMS: no rain expected at your location within {max_lead:.0f} min.")
+        return
 
     try:
         result = check_home(lead_minutes=lead_minutes)
@@ -267,6 +510,41 @@ def hurricane_predict() -> None:
                 f"  t+{hp.horizon_hours}h ({hp.valid_at}): lat={hp.lat_pred:.1f} lon={hp.lon_pred:.1f} "
                 f"wind={hp.wind_pred_kt:.0f}kt"
             )
+
+
+@app.command()
+def hurricane_radar(
+    radius_km: float = typer.Option(500.0, help="Region radius (km) centred on each storm position."),
+) -> None:
+    """Render MRMS radar + nowcasts centred on active tropical cyclones' forecast positions.
+
+    Skips storms outside CONUS MRMS coverage. Needs `poetry install --with display`.
+    """
+    from weather_predictions.hurricane_radar import render_active_storms
+    from weather_predictions.hurricane_predict import ModelNotTrainedError
+
+    try:
+        results = render_active_storms(radius_km=radius_km)
+    except ModelNotTrainedError as e:
+        typer.echo(str(e))
+        raise typer.Exit(code=1)
+
+    if not results:
+        typer.echo("No active tropical cyclones.")
+        return
+
+    for r in results:
+        typer.echo(f"\n{r.name} ({r.storm_id}):")
+        if r.skipped_reason:
+            typer.echo(f"  Skipped: {r.skipped_reason}")
+            continue
+        for pos in r.rendered_positions:
+            if pos.get("skipped"):
+                typer.echo(f"  {pos['label']}: skipped ({pos['skipped']})")
+            elif pos.get("image_path"):
+                typer.echo(f"  {pos['label']}: {pos['image_path']}")
+            else:
+                typer.echo(f"  {pos['label']}: render failed — {pos.get('render_error', '?')}")
 
 
 @app.command()

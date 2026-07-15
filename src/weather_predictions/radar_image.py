@@ -113,7 +113,7 @@ def dbz_to_rgb(dbz: np.ndarray) -> np.ndarray:
     return rgb
 
 
-def _draw_arrows(image: Image.Image, dbz_crop: np.ndarray, flow_crop: np.ndarray, spacing_px: int = 20) -> None:
+def draw_arrows(image: Image.Image, dbz_crop: np.ndarray, flow_crop: np.ndarray, spacing_px: int = 20) -> None:
     """Overlay black arrows on a coarse grid, one per `spacing_px` block.
 
     Each arrow summarizes its whole block (max reflectivity for the "is
@@ -152,10 +152,10 @@ def _draw_arrows(image: Image.Image, dbz_crop: np.ndarray, flow_crop: np.ndarray
             y1 = y0 + (fy / magnitude) * length
 
             draw.line([(x0, y0), (x1, y1)], fill=COLOR_BLACK, width=3)
-            _draw_arrowhead(draw, (x0, y0), (x1, y1))
+            draw_arrowhead(draw, (x0, y0), (x1, y1))
 
 
-def _draw_arrowhead(draw: ImageDraw.ImageDraw, start: tuple[float, float], end: tuple[float, float]) -> None:
+def draw_arrowhead(draw: ImageDraw.ImageDraw, start: tuple[float, float], end: tuple[float, float]) -> None:
     angle = math.atan2(end[1] - start[1], end[0] - start[0])
     head_len, head_angle = 8.0, math.radians(25)
     for sign in (-1, 1):
@@ -183,7 +183,7 @@ def render(
 
     rgb = dbz_to_rgb(dbz_crop)
     image = Image.fromarray(rgb).resize(panel_size, Image.NEAREST)
-    _draw_arrows(image, dbz_crop, flow_crop)
+    draw_arrows(image, dbz_crop, flow_crop)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(output_path)

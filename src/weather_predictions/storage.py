@@ -138,6 +138,14 @@ CREATE TABLE IF NOT EXISTS radar_nowcasts (
     PRIMARY KEY (predicted_at, valid_at, method)
 );
 
+CREATE TABLE IF NOT EXISTS qpe_hourly (
+    valid_at TEXT NOT NULL,
+    latitude REAL NOT NULL,
+    longitude REAL NOT NULL,
+    precip_mm REAL,
+    PRIMARY KEY (valid_at, latitude, longitude)
+);
+
 CREATE TABLE IF NOT EXISTS radar_nowcast_performance (
     evaluated_at TEXT NOT NULL,
     method TEXT NOT NULL,
@@ -444,6 +452,21 @@ def fetch_all_hurricane_performance(db_path: Path = DB_PATH) -> list[dict[str, A
     with connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT * FROM hurricane_performance ORDER BY evaluated_at, horizon_hours").fetchall()
+        return [dict(r) for r in rows]
+
+
+_QPE_COLUMNS = ["valid_at", "latitude", "longitude", "precip_mm"]
+
+
+def upsert_qpe_hourly(records: list[dict[str, Any]], db_path: Path = DB_PATH) -> int:
+    with connect(db_path) as conn:
+        return _upsert(conn, "qpe_hourly", _QPE_COLUMNS, records, replace=True)
+
+
+def fetch_all_qpe_hourly(db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+    with connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM qpe_hourly ORDER BY valid_at").fetchall()
         return [dict(r) for r in rows]
 
 

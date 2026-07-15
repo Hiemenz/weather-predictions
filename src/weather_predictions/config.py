@@ -53,6 +53,18 @@ DATA_DIR = PROJECT_ROOT / "data"
 MODELS_DIR = PROJECT_ROOT / "models"
 RADAR_DATA_DIR = DATA_DIR / "radar"
 
+# NOAA MRMS (Multi-Radar Multi-Sensor) national composite on AWS Open Data.
+# Pre-mosaiced CONUS coverage at 1km / 2-minute resolution — one file instead
+# of ~160 per-station NEXRAD downloads. Public bucket, no credentials needed.
+MRMS_S3_BUCKET = "noaa-mrms-pds"
+MRMS_PRODUCT = "MergedReflectivityQCComposite_00.50"
+# Gauge-corrected hourly rainfall accumulation (mm) — better ground truth for
+# scoring rain predictions than GHCND's once-daily totals. Pass2 waits ~1 hour
+# for gauge data (more accurate); Pass1 is the faster, radar-only estimate.
+MRMS_QPE_PRODUCT = "MultiSensor_QPE_01H_Pass2_00.00"
+MRMS_REGION = "CONUS"
+MRMS_DATA_DIR = DATA_DIR / "mrms"
+
 DB_PATH = DATA_DIR / "observations.sqlite"
 MODEL_PATH = MODELS_DIR / "precip_model.joblib"
 HURRICANE_MODEL_PATH = MODELS_DIR / "hurricane_model.joblib"
