@@ -34,10 +34,10 @@ def _require_aws_cli() -> None:
         )
 
 
-def list_mrms_scans(day: date) -> list[str]:
-    """List S3 keys for all MRMS scans on a given (UTC) date."""
+def list_mrms_scans(day: date, product: str = MRMS_PRODUCT) -> list[str]:
+    """List S3 keys for all scans of an MRMS product on a given (UTC) date."""
     _require_aws_cli()
-    prefix = f"{MRMS_REGION}/{MRMS_PRODUCT}/{day:%Y%m%d}/"
+    prefix = f"{MRMS_REGION}/{product}/{day:%Y%m%d}/"
     result = subprocess.run(
         ["aws", "s3", "ls", f"s3://{MRMS_S3_BUCKET}/{prefix}", "--no-sign-request"],
         capture_output=True,
@@ -74,11 +74,12 @@ def download_mrms_scan(key: str, dest_dir: Path) -> Path:
     return dest_path
 
 
-def latest_mrms_scan_key() -> str | None:
-    """Most recent available MRMS scan, checking today then falling back to yesterday."""
+def latest_mrms_scan_key(product: str = MRMS_PRODUCT) -> str | None:
+    """Most recent available scan of an MRMS product, checking today then
+    falling back to yesterday."""
     today = date.today()
     for day in (today, today - timedelta(days=1)):
-        keys = list_mrms_scans(day)
+        keys = list_mrms_scans(day, product)
         if keys:
             return keys[-1]
     return None

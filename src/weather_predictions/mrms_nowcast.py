@@ -32,6 +32,11 @@ from weather_predictions.radar_nowcast import (
     optical_flow_forecast,
     persistence_forecast,
 )
+from weather_predictions.storage import upsert_radar_nowcasts
+
+# `station` value used in the shared radar_nowcasts table to distinguish MRMS
+# nowcasts from single-NEXRAD-station ones (e.g. "KOHX").
+MRMS_STATION = "MRMS_CONUS"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -62,11 +67,23 @@ def load_recent_mrms_frames(n: int = 2, grid_dir: Path = GRID_DIR) -> list[dict[
     return [load_mrms_grid(f) for f in files[-n:]]
 
 
-def _save_nowcast_grid(dbz: np.ndarray, valid_at: datetime, method: str, dest_dir: Path) -> Path:
+def _save_nowcast_grid(
+    dbz: np.ndarray, valid_at: datetime, method: str, dest_dir: Path, crop: dict[str, Any]
+) -> Path:
+    """Save a forecast grid along with the lat/lon bounds of the crop it was
+    made from, so the evaluator can cut the actual national frame to the same
+    region when scoring."""
     dest_dir.mkdir(parents=True, exist_ok=True)
     ts_compact = valid_at.isoformat().replace(":", "").replace("-", "")
     dest_path = dest_dir / f"MRMS_CONUS_{ts_compact}_{method}.npz"
-    np.savez_compressed(dest_path, reflectivity_dbz=dbz.astype(np.float32))
+    np.savez_compressed(
+        dest_path,
+        reflectivity_dbz=dbz.astype(np.float32),
+        lat_min=crop["lat_min"],
+        lat_max=crop["lat_max"],
+        lon_min=crop["lon_min"],
+        lon_max=crop["lon_max"],
+    )
     return dest_path
 
 
@@ -93,11 +110,23 @@ def nowcast(
     }
 
     grid_paths: dict[str, str] = {}
+    rows = []
     for method, dbz in forecasts.items():
-        saved_path = _save_nowcast_grid(dbz, valid_at, method, dest_dir)
+        saved_path = _save_nowcast_grid(dbz, valid_at, method, dest_dir, curr_crop)
         grid_paths[method] = str(saved_path)
+        rows.append(
+            {
+                "predicted_at": curr_frame["timestamp"],
+                "valid_at": valid_at.isoformat(),
+                "lead_minutes": lead_minutes,
+                "method": method,
+                "station": MRMS_STATION,
+                "grid_path": str(saved_path),
+            }
+        )
         log.info("[%s] MRMS nowcast for %s -> %s", method, valid_at.isoformat(), saved_path)
 
+    upsert_radar_nowcasts(rows)
     return MrmsNowcastResult(
         predicted_at=curr_frame["timestamp"],
         valid_at=valid_at.isoformat(),

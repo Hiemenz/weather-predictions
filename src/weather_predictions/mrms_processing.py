@@ -209,6 +209,51 @@ def crop_to_region(
     }
 
 
+def crop_to_bounds(
+    frame: dict[str, Any],
+    lat_min: float,
+    lat_max: float,
+    lon_min: float,
+    lon_max: float,
+) -> dict[str, Any]:
+    """Crop a national MRMS grid to an explicit lat/lon bounding box.
+
+    Used at evaluation time to cut the actual national frame down to the same
+    region a stored nowcast crop covers, so the two arrays line up cell-for-cell.
+    """
+    res_lat = (frame["lat_max"] - frame["lat_min"]) / (frame["nlat"] - 1)
+    res_lon = (frame["lon_max"] - frame["lon_min"]) / (frame["nlon"] - 1)
+
+    row_min = int(round((lat_min - frame["lat_min"]) / res_lat))
+    row_max = int(round((lat_max - frame["lat_min"]) / res_lat))
+    col_min = int(round((lon_min - frame["lon_min"]) / res_lon))
+    col_max = int(round((lon_max - frame["lon_min"]) / res_lon))
+
+    if row_max < 0 or col_max < 0 or row_min >= frame["nlat"] or col_min >= frame["nlon"]:
+        raise OutOfMrmsRangeError(
+            f"Bounds lat [{lat_min}, {lat_max}] lon [{lon_min}, {lon_max}] fall "
+            "entirely outside the MRMS CONUS grid."
+        )
+
+    row_min = max(0, row_min)
+    row_max = min(frame["nlat"] - 1, row_max)
+    col_min = max(0, col_min)
+    col_max = min(frame["nlon"] - 1, col_max)
+
+    dbz_crop = frame["reflectivity_dbz"][row_min : row_max + 1, col_min : col_max + 1]
+    return {
+        "source": "MRMS_CONUS",
+        "timestamp": frame["timestamp"],
+        "lat_min": frame["lat_min"] + row_min * res_lat,
+        "lat_max": frame["lat_min"] + row_max * res_lat,
+        "lon_min": frame["lon_min"] + col_min * res_lon,
+        "lon_max": frame["lon_min"] + col_max * res_lon,
+        "nlat": int(dbz_crop.shape[0]),
+        "nlon": int(dbz_crop.shape[1]),
+        "reflectivity_dbz": dbz_crop,
+    }
+
+
 def load_mrms_grid(path: Path) -> dict[str, Any]:
     """Load a frame saved by `save_mrms_grid` back into the same dict shape."""
     with np.load(path) as data:

@@ -58,6 +58,10 @@ RADAR_DATA_DIR = DATA_DIR / "radar"
 # of ~160 per-station NEXRAD downloads. Public bucket, no credentials needed.
 MRMS_S3_BUCKET = "noaa-mrms-pds"
 MRMS_PRODUCT = "MergedReflectivityQCComposite_00.50"
+# Gauge-corrected hourly rainfall accumulation (mm) — better ground truth for
+# scoring rain predictions than GHCND's once-daily totals. Pass2 waits ~1 hour
+# for gauge data (more accurate); Pass1 is the faster, radar-only estimate.
+MRMS_QPE_PRODUCT = "MultiSensor_QPE_01H_Pass2_00.00"
 MRMS_REGION = "CONUS"
 MRMS_DATA_DIR = DATA_DIR / "mrms"
 
