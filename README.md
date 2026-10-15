@@ -123,7 +123,7 @@ CDO/LCD/NWS split above:
   the tabular `weather fetch`, every 5 minutes to match the scan cadence).
 - `weather radar-decode-pending` — decodes whatever raw files it finds in
   `data/radar/raw/` (e.g. synced over from the Pi) and deletes them after.
-  Needs `poetry install --with radar`. Run this wherever Py-ART is
+  Needs `uv sync --group radar`. Run this wherever Py-ART is
   installed (the Mac).
 - `weather radar-fetch` / `radar-backfill` — download + decode in one step,
   for convenience when running directly on a machine that has the `radar`
