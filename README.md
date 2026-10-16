@@ -21,6 +21,10 @@ model to predict rain probability and high/low temperature 1-3 days out.
 - **NWS (`weather fetch`)** — live observations for the last ~1-2 days,
   used to fill the gap between "now" and whatever GHCND/LCD have finalized
   so far. Also used to fetch the official forecast for comparison.
+- **NWS hourly forecast (`weather forecast-hourly`)** — NWS's own hourly
+  temp/precip-probability/wind forecast out to ~7 days. This is a separate,
+  authoritative product surfaced as-is, not something the tabular model
+  (which is daily, 1-3 days out) tries to reproduce at hourly resolution.
 
 All three feed into one `daily_observations` table. GHCND owns temp_max_c/
 temp_min_c/precip_mm/rain (authoritative, always wins); LCD and the NWS
@@ -54,6 +58,7 @@ poetry run weather status                         # how much history is collecte
 poetry run weather train                           # train the 1/2/3-day rain + temp models
 poetry run weather predict                         # predict next 3 days, stores predictions for scoring
 poetry run weather evaluate                        # score past predictions against what actually happened
+poetry run weather forecast-hourly --hours 24      # NWS's own hourly temp/precip-probability forecast
 
 poetry run weather radar-fetch                     # download + decode the latest radar scan
 poetry run weather radar-backfill START END        # e.g. 2026-07-04T00:00:00 2026-07-04T06:00:00
@@ -104,6 +109,14 @@ accuracy was 0.53/0.51 — clearly losing to persistence. Pressure trend
 closed most of that gap. Temperature forecasting beats the naive baseline
 at every horizon either way.
 
+Tried swapping the RandomForest classifier/regressors for
+`HistGradientBoosting*` (same scikit-learn dependency, no new package) to
+see if it was a clear win: rain accuracy improved slightly at every horizon
+(0.68/0.57/0.55 vs. 0.65/0.55/0.55), but temp MAE got a little worse at
+t+3d (3.9°C/3.5°C vs. 3.8°C/3.5°C max/min). Mixed, not a clean
+improvement, so the model stayed RandomForest rather than swapping on a
+result that could just be noise in a single train/test split.
+
 ## Radar
 
 Raw NEXRAD Level II volume scans for KOHX (Nashville radar) come from
@@ -123,7 +136,7 @@ CDO/LCD/NWS split above:
   the tabular `weather fetch`, every 5 minutes to match the scan cadence).
 - `weather radar-decode-pending` — decodes whatever raw files it finds in
   `data/radar/raw/` (e.g. synced over from the Pi) and deletes them after.
-  Needs `poetry install --with radar`. Run this wherever Py-ART is
+  Needs `uv sync --group radar`. Run this wherever Py-ART is
   installed (the Mac).
 - `weather radar-fetch` / `radar-backfill` — download + decode in one step,
   for convenience when running directly on a machine that has the `radar`
@@ -248,8 +261,8 @@ nowcast's predict/evaluate loop.
 
 ## How it works
 
-- `nws_client.py` — wrapper around the NWS API (live observations, forecast,
-  and active alerts).
+- `nws_client.py` — wrapper around the NWS API (live observations, the
+  daily forecast, the separate hourly forecast, and active alerts).
 - `cdo_client.py` — wrapper around NOAA CDO/GHCND (bulk historical temp/precip).
 - `lcd_client.py` — downloads NOAA LCD's per-year CSVs (bulk historical
   pressure/humidity/wind); shells out to `curl` for the actual download
