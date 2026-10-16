@@ -30,6 +30,14 @@ radar = ["arm-pyart>=2.2.4,<3"]
 # Nowcasting (optical flow) and e-ink rendering; installs fine on a Pi
 # (`uv sync --group display`).
 display = ["opencv-python-headless>=4.12.0.88,<5", "pillow>=11.3.0,<12"]
+# Web dashboard: FastAPI + Jinja2 served from the Pi.
+web = ["fastapi>=0.111.0", "uvicorn[standard]>=0.30.0", "jinja2>=3.1.0"]
+# ConvLSTM learned nowcasting (PyTorch; MPS on Apple Silicon). CPU inference works on the Pi without it.
+convlstm = ["torch>=2.3.0"]
+# MRMS national radar composite decoding: cfgrib wraps the eccodes C library for GRIB2.
+# eccodes must be installed separately (macOS: brew install eccodes; Debian: apt install libeccodes-dev).
+# Mac-only in practice; the Pi only displays grids fetched elsewhere.
+mrms = ["cfgrib>=0.9.15,<0.10"]
 
 [build-system]
 requires = ["hatchling"]
