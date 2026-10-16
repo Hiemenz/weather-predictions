@@ -81,3 +81,14 @@ poetry run weather radar-decode-pending  # decodes + deletes the synced raw file
 add a second crontab line for `radar-fetch-raw` at whatever cadence you
 want (scans arrive every ~5 minutes; every 5-10 minutes matches that,
 every hour is enough if you just want a lower-cost archive).
+
+### E-ink display: also fine on the Pi
+
+`weather radar-nowcast` and `weather radar-image` (renders a region as a PNG
+for a Waveshare e-ink panel, with motion arrows) only ever load already-
+decoded grids — they never decode a raw scan, so they don't need Py-ART/
+Cartopy at all. Install just `poetry install --with display` (Pillow +
+OpenCV) on the Pi, sync decoded grids over from the Mac after
+`radar-decode-pending` runs there (same rsync idea as raw scans above, just
+pointed at `data/radar/grids/` instead), and run `radar-image` right on the
+Pi to keep the panel updated — no need to route it back through the Mac.

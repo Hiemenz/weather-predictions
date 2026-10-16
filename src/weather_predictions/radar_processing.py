@@ -5,6 +5,12 @@ Raw scans are 3D polar-coordinate sweeps (multiple elevation angles, each a
 a nowcasting model. This projects the lowest elevation sweep onto a flat,
 fixed-resolution Cartesian grid centered on the radar, which is the standard
 representation for radar-based ML (e.g. the MRMS/nowcasting literature).
+
+Py-ART is only imported inside `decode_reflectivity_grid`, not at module
+scope: `save_grid`/`load_grid`/`parse_scan_timestamp` don't need it at all,
+and several consumers (radar_nowcast.py, radar_image.py) only ever load
+already-decoded grids — an eager top-level `import pyart` would force the
+`radar` dependency group (and Cartopy's ARM wheel problem) onto those too.
 """
 
 from __future__ import annotations
@@ -15,7 +21,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import pyart
 
 _FILENAME_RE = re.compile(r"^(?P<station>[A-Z]{4})(?P<ts>\d{8}_\d{6})_V\d+")
 
@@ -45,6 +50,8 @@ def decode_reflectivity_grid(
     Returns a dict with a (n, n) float32 array in dBZ (NaN where no data),
     plus enough metadata to place it on a map and line it up with other frames.
     """
+    import pyart
+
     station, timestamp = parse_scan_timestamp(file_path)
     radar = pyart.io.read_nexrad_archive(str(file_path))
 
